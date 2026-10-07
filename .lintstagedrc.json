@@ -1,0 +1,11 @@
+{
+  "apps/web/**/*.{js,jsx,ts,tsx,json,css}": [
+    "prettier --write"
+  ],
+  "packages/shared/**/*.{ts,tsx,json}": [
+    "prettier --write"
+  ],
+  "apps/server/**/*.py": [
+    "black"
+  ]
+}
