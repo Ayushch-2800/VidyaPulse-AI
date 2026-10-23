@@ -41,4 +41,4 @@ build/
 .vscode/
 .idea/
 *.swp
-*.swo
+*.swoapps/server/temp_chunks/

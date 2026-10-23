@@ -6,6 +6,7 @@ import os
 import uuid
 import uvicorn
 import mimetypes
+import yt_dlp
 from fastapi import (
     FastAPI,
     Depends,
@@ -18,9 +19,15 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from temporal_chunker import align_multimodal_chunks
+from embedding_engine import index_multimodal_chunks
+
 from auth import get_current_user
 from audio_extractor import download_youtube_audio
-from asr_engine import transcribe_multilingual_audio, build_semantic_chunks_multilingual
+from asr_engine import (
+    transcribe_multilingual_audio,
+    build_semantic_chunks_multilingual,
+)
 from storage_utils import supabase
 from media_validator import (
     validate_and_save_upload,
@@ -28,6 +35,7 @@ from media_validator import (
     get_media_duration_seconds,
 )
 from vision_extractor import process_video_keyframes
+from temporal_chunker import align_multimodal_chunks
 
 app = FastAPI(title="VidyaPulse AI Engine")
 
@@ -146,80 +154,108 @@ def process_ingestion_pipeline(
 
 
 @app.post("/ingest/youtube")
-def ingest_youtube_lecture(payload: IngestYouTubeRequest):
+async def ingest_video_pipeline(payload: IngestYouTubeRequest):
+    youtube_url = payload.youtube_url
     user_id = "74a53efe-4184-4c33-bffa-ab99456c5ffb"
 
+    # Generate a temporary path for downloading the media
+    temp_id = str(uuid.uuid4())
+    video_path = f"temp_chunks/{temp_id}.mp4"
+    video_title = "YouTube Lecture"
     lecture_id = None
-    local_audio_path = None
 
+    print(f"--- DOWNLOADING YOUTUBE VIDEO: {youtube_url} ---")
     try:
-        # 1. Download YouTube Audio
-        audio_info = download_youtube_audio(payload.youtube_url, user_id)
-        local_audio_path = audio_info.get("local_wav_path") or audio_info.get(
-            "local_mp3_path"
+        ydl_opts = {
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "outtmpl": video_path,
+            "quiet": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # extract_info grabs the video title and downloads it simultaneously
+            info = ydl.extract_info(youtube_url, download=True)
+            video_title = info.get("title", video_title)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to download YouTube video: {e}"
         )
 
-        # 2. Insert initial record into 'lectures' table
+    try:
+        # 0. Create the parent record in 'lectures' table so Foreign Keys (like keyframes) are satisfied
         lecture_data = {
             "user_id": user_id,
-            "title": audio_info.get("title", "Untitled Lecture"),
+            "title": video_title,
             "source_type": "youtube",
-            "source_url": payload.youtube_url,
-            "media_bucket_path": audio_info.get("bucket_path"),
+            "source_url": youtube_url,
             "status": "processing",
         }
         res = supabase.table("lectures").insert(lecture_data).execute()
-
         if not res.data:
-            raise RuntimeError(
-                "Failed to insert lecture record into Supabase database."
-            )
+            raise RuntimeError("Failed to create lecture record in Supabase.")
 
-        lecture_record = res.data[0]
-        lecture_id = lecture_record["id"]
+        # Grab the real database-generated ID
+        lecture_id = res.data[0]["id"]
+        print(f"--- STARTING UNIFIED INGESTION FOR LECTURE {lecture_id} ---")
 
-        # 3. Transcribe Audio via Pan-India Multilingual ASR
+        # ==========================================
+        # TASK 9: Audio Transcription
+        # ==========================================
+        print("[1/4] Running Audio Transcription...")
         asr_result = transcribe_multilingual_audio(
-            file_path=local_audio_path, language_code="unknown", mode="codemix"
+            file_path=video_path, language_code="unknown", mode="codemix"
+        )
+        transcript_segments = asr_result["segments"]
+        detected_lang = asr_result["detected_language"]
+
+        # ==========================================
+        # TASK 10: Vision & OCR Extraction
+        # ==========================================
+        print("[2/4] Running Vision & OCR Extraction...")
+        keyframes_metadata = process_video_keyframes(
+            video_path=video_path,
+            lecture_id=lecture_id,
+            user_id=user_id,
+            ssim_threshold=0.70,  # Stricter threshold to avoid Gemini 429 Quota Error
         )
 
-        detected_lang = asr_result["detected_language"]
-        segments = asr_result["segments"]
+        # ==========================================
+        # TASK 11: Temporal Sync & Chunking
+        # ==========================================
+        print("[3/4] Synchronizing Multimodal Chunks...")
+        multimodal_chunks = align_multimodal_chunks(
+            transcript_segments=transcript_segments,
+            keyframes_data=keyframes_metadata,
+            lecture_id=lecture_id,
+            window_size=300,
+            overlap_size=50,
+            language=detected_lang,
+        )
 
-        # 4. Build Semantic Chunks
-        chunks = build_semantic_chunks_multilingual(segments, target_duration=45.0)
+        # ==========================================
+        # TASK 12: Multilingual Vector Embedding
+        # ==========================================
+        print("[4/4] Generating Embeddings and Storing in Database...")
+        index_multimodal_chunks(chunks=multimodal_chunks, lecture_id=lecture_id)
 
-        # 5. Batch insert chunks into 'transcript_chunks' table
-        db_chunks = []
-        for index, chunk in enumerate(chunks):
-            db_chunks.append(
-                {
-                    "lecture_id": lecture_id,
-                    "chunk_index": index,
-                    "text_content": chunk["chunk_text"],
-                    "start_time": chunk["start_time"],
-                    "end_time": chunk["end_time"],
-                    "language": detected_lang,
-                }
-            )
-
-        if db_chunks:
-            supabase.table("transcript_chunks").insert(db_chunks).execute()
-
-        # 6. Update lecture status to 'completed' with detected language
+        # Mark the lecture as successfully completed
         supabase.table("lectures").update(
             {"status": "completed", "language": detected_lang}
         ).eq("id", lecture_id).execute()
 
+        print("--- INGESTION COMPLETE ---")
+
         return {
             "status": "success",
             "lecture_id": lecture_id,
-            "title": audio_info.get("title"),
+            "title": video_title,
             "detected_language": detected_lang,
-            "chunks_processed": len(chunks),
+            "total_chunks_generated": len(multimodal_chunks),
+            "data": multimodal_chunks,
         }
 
     except Exception as e:
+        # If any step fails, safely update the database status to failed
         if lecture_id:
             try:
                 supabase.table("lectures").update({"status": "failed"}).eq(
@@ -227,20 +263,12 @@ def ingest_youtube_lecture(payload: IngestYouTubeRequest):
                 ).execute()
             except Exception:
                 pass
-
-        print(f"[INGESTION ERROR]: {str(e)}")
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ingestion failed: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-        if local_audio_path and os.path.exists(local_audio_path):
-            try:
-                os.remove(local_audio_path)
-            except OSError:
-                pass
+        # Always clean up the temporary video file to prevent server disk overflow
+        if os.path.exists(video_path):
+            os.remove(video_path)
 
 
 @app.post("/ingest/upload")

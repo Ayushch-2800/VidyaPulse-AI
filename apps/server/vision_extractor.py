@@ -1,6 +1,7 @@
 import cv2
 import os
 import uuid
+import time
 from skimage.metrics import structural_similarity as ssim
 from storage_utils import supabase
 from ocr_engine import extract_visual_data
@@ -29,12 +30,15 @@ def process_and_index_keyframes(keyframe_paths: list, timestamps: list) -> list:
         if visual_data["extracted_content"]:
             indexed_visual_payloads.append(visual_data)
 
+        # Slow down requests to avoid the Gemini 429 Quota/Resource Exhausted error
+        time.sleep(3)
+
     print("[VISION PIPELINE]: Visual OCR processing complete.")
     return indexed_visual_payloads
 
 
 def process_video_keyframes(
-    video_path: str, lecture_id: str, user_id: str, ssim_threshold: float = 0.85
+    video_path: str, lecture_id: str, user_id: str, ssim_threshold: float = 0.70
 ):
     """
     Extracts high-value keyframes from a video using SSIM, runs the VLM OCR pipeline,
