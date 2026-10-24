@@ -4,12 +4,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv(
-    "SUPABASE_SERVICE_ROLE_KEY", ""
-)  # Use Service Role for backend bypass if needed, or Anon Key
+_client = None
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def get_supabase() -> Client:
+    """Creates the Supabase client on first use, never at import time."""
+    global _client
+    if _client is None:
+        _client = create_client(
+            os.getenv("NEXT_PUBLIC_SUPABASE_URL", ""),
+            # Use Service Role for backend bypass if needed, or Anon Key
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+        )
+    return _client
+
+
+class _LazySupabase:
+    """Stands in for the client so `from storage_utils import supabase` opens no connection."""
+
+    def __getattr__(self, name):
+        return getattr(get_supabase(), name)
+
+
+supabase: Client = _LazySupabase()  # type: ignore[assignment]
 
 
 def generate_signed_url(

@@ -1,8 +1,19 @@
-import static_ffmpeg
+import faulthandler
+import sys
+import time
 
-static_ffmpeg.add_paths()
+# Nothing below makes a network call at import time. If an import still stalls,
+# this prints where it is stuck every 60s instead of freezing silently.
+print("[STARTUP] Importing modules...", flush=True)
+_import_started = time.monotonic()
+faulthandler.dump_traceback_later(60, repeat=True, file=sys.stderr)
 
 import os
+import threading
+from contextlib import asynccontextmanager
+
+import static_ffmpeg
+
 import uuid
 import uvicorn
 import mimetypes
@@ -24,7 +35,7 @@ from embedding_engine import index_multimodal_chunks
 
 from auth import get_current_user
 from audio_extractor import download_youtube_audio
-from asr_engine import transcribe_multilingual_audio
+from asr_engine import get_whisper_model, transcribe_multilingual_audio
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 from synthesizer import synthesize_answer
@@ -38,7 +49,33 @@ from media_validator import (
 from vision_extractor import process_video_keyframes
 from temporal_chunker import align_multimodal_chunks
 
-app = FastAPI(title="VidyaPulse AI Engine")
+faulthandler.cancel_dump_traceback_later()
+print(
+    f"[STARTUP] Modules imported in {time.monotonic() - _import_started:.1f}s.",
+    flush=True,
+)
+
+
+def warm_whisper_model() -> None:
+    try:
+        get_whisper_model()
+    except Exception as e:
+        # Not fatal: the first transcription tries to load it again
+        print(f"[ASR SETUP ERROR] Could not load the Whisper model yet: {e}", flush=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Puts the bundled ffmpeg on PATH; it downloads only on the very first run
+    print("[STARTUP] Adding ffmpeg to PATH...", flush=True)
+    static_ffmpeg.add_paths()
+    # Warm the local Whisper model in the background so startup completes immediately;
+    # the first transcription waits for it if it is still loading
+    threading.Thread(target=warm_whisper_model, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="VidyaPulse AI Engine", lifespan=lifespan)
 
 # CORS setup for Next.js frontend & Chrome Extension
 app.add_middleware(

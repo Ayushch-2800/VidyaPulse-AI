@@ -1,6 +1,5 @@
 import os
 import time
-from google import genai
 from PIL import Image
 from typing import Dict, Any
 
@@ -13,6 +12,8 @@ def extract_visual_data(image_path: str, timestamp: float) -> Dict[str, Any]:
     """
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Keyframe not found at {image_path}")
+
+    from google import genai  # Imported here so loading this module makes no Gemini setup
 
     img = Image.open(image_path)
     client = genai.Client()
