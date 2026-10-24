@@ -1,21 +1,36 @@
+import sys
+
+if __name__ == "__main__":
+    # Check keys before the imports below open Supabase and Gemini connections
+    from gemini_utils import check_environment
+
+    print("[CHEATSHEET] Starting...", flush=True)
+    try:
+        check_environment("CHEATSHEET")
+    except EnvironmentError as e:
+        print(f"\n[CHEATSHEET ERROR] {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
+    print(
+        "[CHEATSHEET] Loading Supabase client and resolving Gemini models...",
+        flush=True,
+    )
+
 import json
 import math
 import re
-import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
-from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field
 
 from storage_utils import supabase
-from embedding_engine import generate_embeddings
+from gemini_utils import GeminiKeyError, embed_texts, generate_structured, log
 from synthesizer import CHAT_MODEL, TIMESTAMP_PATTERN, format_timestamp
+
+TAG = "CHEATSHEET"
 
 # ~12k characters per Gemini call keeps a 1-hour lecture to roughly 5 requests
 MAX_BATCH_CHARS = 12000
-EMBED_BATCH_SIZE = 100
 TOPIC_MATCH_THRESHOLD = 0.6  # Cosine similarity; tune after seeding real PYQ topics
 TOPICS_PER_ITEM = 3
 LECTURE_TOPIC_LIMIT = 10
@@ -95,34 +110,11 @@ def build_batch_prompt(batch: List[Dict[str, Any]]) -> str:
     return "LECTURE CHUNKS:\n\n" + "\n\n".join(parts)
 
 
-def call_gemini_structured(prompt: str, max_retries: int = 4) -> List[CheatSheetItem]:
-    """Calls Gemini Flash in JSON mode with the CheatSheetBatch schema, backing off on 429/503."""
-    client = genai.Client()
-
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=CHAT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=EXTRACTION_PROMPT,
-                    temperature=0.1,
-                    response_mime_type="application/json",
-                    response_schema=CheatSheetBatch,
-                ),
-            )
-            if isinstance(response.parsed, CheatSheetBatch):
-                return response.parsed.items
-            return CheatSheetBatch.model_validate_json(response.text or "{}").items
-        except Exception as e:
-            retryable = "429" in str(e) or "503" in str(e)
-            if retryable and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 10
-                print(f"[CHEATSHEET WARNING] Gemini busy. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                raise
-    return []
+def call_gemini_structured(prompt: str) -> List[CheatSheetItem]:
+    """Calls Gemini Flash in JSON mode with the CheatSheetBatch schema (timeout, pacing, logged retries)."""
+    return generate_structured(
+        prompt, EXTRACTION_PROMPT, CheatSheetBatch, temperature=0.1, tag=TAG
+    ).items
 
 
 def resolve_timestamp(label: str, batch: List[Dict[str, Any]]) -> Optional[float]:
@@ -151,10 +143,15 @@ def extract_items(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     batches = batch_chunks(chunks)
     for i, batch in enumerate(batches, start=1):
-        print(
-            f"[CHEATSHEET] Extracting batch {i}/{len(batches)} ({len(batch)} chunks)..."
+        start = format_timestamp(float(batch[0].get("start_time_seconds") or 0))
+        end = format_timestamp(float(batch[-1].get("end_time_seconds") or 0))
+        log(
+            TAG,
+            f"Gemini call {i}/{len(batches)}: {len(batch)} chunks covering {start}-{end}...",
         )
-        for raw in call_gemini_structured(build_batch_prompt(batch)):
+        raw_items = call_gemini_structured(build_batch_prompt(batch))
+        log(TAG, f"  Batch {i}/{len(batches)} returned {len(raw_items)} items.")
+        for raw in raw_items:
             kind = raw.kind.strip().lower()
             if kind not in ITEM_KINDS or not raw.title.strip():
                 continue
@@ -168,6 +165,10 @@ def extract_items(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # The 50-word chunk overlap repeats items; keep the earliest occurrence
             seen.setdefault(normalize_key(item), item)
 
+    log(
+        TAG,
+        f"Extraction done: {len(seen)} unique items after removing overlap duplicates.",
+    )
     return list(seen.values())
 
 
@@ -187,6 +188,7 @@ def tag_exam_topics(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     Tags each item with the closest seeded exam topics by cosine similarity, and returns
     lecture-level tags. Uses embeddings only (no generation calls). Skips if no topics are seeded.
     """
+    log(TAG, "Loading seeded exam topics from Supabase...")
     res = (
         supabase.table("exam_topics")
         .select("id, exam, subject, topic, embedding")
@@ -198,18 +200,18 @@ def tag_exam_topics(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if row.get("embedding")
     ]
     if not topics or not items:
+        if not topics:
+            log(
+                TAG,
+                "No embedded exam topics found; skipping tagging (run seed_exam_topics.py).",
+            )
         for item in items:
             item["exam_topics"] = []
         return []
 
+    log(TAG, f"Tagging {len(items)} items against {len(topics)} exam topics...")
     texts = [f"{i['title']}: {i['explanation']} {i['latex']}".strip() for i in items]
-    item_vectors: List[List[float]] = []
-    for start in range(0, len(texts), EMBED_BATCH_SIZE):
-        item_vectors.extend(
-            generate_embeddings(texts[start : start + EMBED_BATCH_SIZE])
-        )
-    if len(item_vectors) != len(items):
-        raise RuntimeError("Failed to embed cheat-sheet items for topic tagging.")
+    item_vectors = embed_texts(texts, tag=TAG)
 
     lecture_scores: Dict[int, Dict[str, Any]] = {}
     for item, vector in zip(items, item_vectors):
@@ -269,13 +271,28 @@ def generate_cheat_sheet(lecture_id: str) -> Dict[str, Any]:
     Task 15 background worker: builds the structured cheat sheet for one lecture and stores it
     in cheat_sheets. Runs after ingestion completes, or on demand via the API.
     """
-    print(f"--- GENERATING CHEAT SHEET FOR LECTURE {lecture_id} ---")
-    save_cheat_sheet(lecture_id, status="processing", error=None, model=CHAT_MODEL)
+    log(TAG, f"--- GENERATING CHEAT SHEET FOR LECTURE {lecture_id} ---")
 
     try:
+        try:
+            save_cheat_sheet(
+                lecture_id, status="processing", error=None, model=CHAT_MODEL
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Supabase write to cheat_sheets failed ({e}). Check NEXT_PUBLIC_SUPABASE_URL and "
+                "SUPABASE_SERVICE_ROLE_KEY, and that migrations/004_cheat_sheets.sql has been run."
+            ) from e
+        log(TAG, "Fetching lecture chunks from Supabase...")
         chunks = fetch_lecture_chunks(lecture_id)
         if not chunks:
-            raise ValueError("No indexed chunks found for this lecture.")
+            raise ValueError(
+                "No indexed chunks found for this lecture. Check the lecture id and that ingestion completed."
+            )
+        log(
+            TAG,
+            f"Found {len(chunks)} chunks; {len(batch_chunks(chunks))} Gemini call(s) needed.",
+        )
 
         items = extract_items(chunks)
         topic_tags = tag_exam_topics(items)
@@ -287,25 +304,34 @@ def generate_cheat_sheet(lecture_id: str) -> Dict[str, Any]:
         ):
             content[item["kind"] + "s"].append(item)
 
+        log(TAG, "Saving cheat sheet to Supabase...")
         save_cheat_sheet(
             lecture_id, status="completed", content=content, topic_tags=topic_tags
         )
-        print(
+        log(
+            TAG,
             f"--- CHEAT SHEET COMPLETE: {len(content['definitions'])} definitions, "
-            f"{len(content['theorems'])} theorems, {len(content['formulas'])} formulas ---"
+            f"{len(content['theorems'])} theorems, {len(content['formulas'])} formulas ---",
         )
         return {"status": "completed", "content": content, "topic_tags": topic_tags}
 
     except Exception as e:
-        print(f"[CHEATSHEET ERROR]: {e}")
-        save_cheat_sheet(lecture_id, status="failed", error=str(e))
+        kind = "INVALID GEMINI KEY" if isinstance(e, GeminiKeyError) else "ERROR"
+        print(f"\n[CHEATSHEET {kind}] {e}", file=sys.stderr, flush=True)
+        try:
+            save_cheat_sheet(lecture_id, status="failed", error=str(e))
+        except Exception as save_error:
+            print(
+                f"[CHEATSHEET ERROR] Could not record the failure in Supabase: {save_error}",
+                file=sys.stderr,
+                flush=True,
+            )
         return {"status": "failed", "error": str(e)}
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) != 2:
         print("Usage: python cheat_sheet_engine.py <lecture_id>")
         sys.exit(1)
-    generate_cheat_sheet(sys.argv[1])
+    result = generate_cheat_sheet(sys.argv[1])
+    sys.exit(0 if result["status"] == "completed" else 1)

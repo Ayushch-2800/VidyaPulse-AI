@@ -9,8 +9,10 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def get_valid_embedding_model():
     """Queries Google's API to find the exact embedding model authorized for your key."""
+    print("[EMBEDDING SETUP]: Resolving Gemini embedding model...", flush=True)
     try:
-        for m in genai.list_models():
+        # Timeout so a slow or rate-limited API fails over instead of hanging every import
+        for m in genai.list_models(request_options={"timeout": 30}):
             # Check if the model supports the 'embedContent' method
             if "embedContent" in m.supported_generation_methods:
                 return m.name
@@ -18,6 +20,11 @@ def get_valid_embedding_model():
         print(f"[EMBEDDING SETUP ERROR]: Could not fetch models list: {e}")
 
     # Fallback to the current standard if dynamic fetch fails
+    print(
+        "[EMBEDDING SETUP]: WARNING - falling back to models/text-embedding-004. "
+        "If your chunks were embedded with a different model, similarity scores will be wrong.",
+        flush=True,
+    )
     return "models/text-embedding-004"
 
 

@@ -1,12 +1,26 @@
-import time
+import sys
+
+if __name__ == "__main__":
+    # Check keys before the imports below open Supabase and Gemini connections
+    from gemini_utils import check_environment
+
+    print("[STUDY SET] Starting...", flush=True)
+    try:
+        check_environment("STUDY SET")
+    except EnvironmentError as e:
+        print(f"\n[STUDY SET ERROR] {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
+    print(
+        "[STUDY SET] Loading Supabase client and resolving Gemini models...", flush=True
+    )
+
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 
-from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field
 
 from storage_utils import supabase
+from gemini_utils import GeminiKeyError, generate_structured, log
 from synthesizer import CHAT_MODEL
 from cheat_sheet_engine import (
     fetch_lecture_chunks,
@@ -14,6 +28,7 @@ from cheat_sheet_engine import (
     resolve_timestamp,
 )
 
+TAG = "STUDY SET"
 FLASHCARD_COUNT = 10
 QUIZ_QUESTION_COUNT = 5
 OPTIONS_PER_QUESTION = 4
@@ -77,34 +92,11 @@ def sample_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [chunks[int(i * step)] for i in range(keep)]
 
 
-def call_gemini_study_set(prompt: str, max_retries: int = 4) -> StudySet:
-    """Calls Gemini Flash in JSON mode with the StudySet schema, backing off on 429/503."""
-    client = genai.Client()
-
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=CHAT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=STUDY_SET_PROMPT,
-                    temperature=0.4,
-                    response_mime_type="application/json",
-                    response_schema=StudySet,
-                ),
-            )
-            if isinstance(response.parsed, StudySet):
-                return response.parsed
-            return StudySet.model_validate_json(response.text or "{}")
-        except Exception as e:
-            retryable = "429" in str(e) or "503" in str(e)
-            if retryable and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 10
-                print(f"[STUDY SET WARNING] Gemini busy. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                raise
-    raise RuntimeError("Gemini returned no study set.")
+def call_gemini_study_set(prompt: str) -> StudySet:
+    """Calls Gemini Flash in JSON mode with the StudySet schema (timeout, pacing, logged retries)."""
+    return generate_structured(
+        prompt, STUDY_SET_PROMPT, StudySet, temperature=0.4, tag=TAG
+    )
 
 
 def clean_flashcards(
@@ -139,7 +131,7 @@ def clean_quiz(
             or not 0 <= q.correct_index < OPTIONS_PER_QUESTION
             or len(set(options)) != OPTIONS_PER_QUESTION
         ):
-            print(f"[STUDY SET] Dropping malformed quiz question: {q.question[:60]}")
+            log(TAG, f"Dropping malformed quiz question: {q.question[:60]}")
             continue
         cleaned.append(
             {
@@ -173,56 +165,94 @@ def generate_study_set(lecture_id: str) -> Dict[str, Any]:
     Task 16 background worker: generates 10 flashcards and a 5-question quiz for one lecture
     in a single Gemini call and saves them to study_artifacts.
     """
-    print(f"--- GENERATING STUDY SET FOR LECTURE {lecture_id} ---")
-    lecture = (
-        supabase.table("lectures").select("user_id").eq("id", lecture_id).execute()
-    )
-    if not lecture.data:
-        return {"status": "failed", "error": "Lecture not found."}
-    user_id = lecture.data[0]["user_id"]
-
-    for kind in ("flashcards", "quiz"):
-        save_study_artifact(
-            lecture_id, user_id, kind, status="processing", error=None, model=CHAT_MODEL
-        )
+    log(TAG, f"--- GENERATING STUDY SET FOR LECTURE {lecture_id} ---")
+    user_id = None
 
     try:
+        log(TAG, "Looking up the lecture in Supabase...")
+        try:
+            lecture = (
+                supabase.table("lectures")
+                .select("user_id")
+                .eq("id", lecture_id)
+                .execute()
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Supabase query on lectures failed ({e}). Check NEXT_PUBLIC_SUPABASE_URL and "
+                "SUPABASE_SERVICE_ROLE_KEY, and that lecture_id is a valid uuid."
+            ) from e
+        if not lecture.data:
+            raise ValueError(f"Lecture {lecture_id} not found in the lectures table.")
+        user_id = lecture.data[0]["user_id"]
+
+        for kind in ("flashcards", "quiz"):
+            save_study_artifact(
+                lecture_id,
+                user_id,
+                kind,
+                status="processing",
+                error=None,
+                model=CHAT_MODEL,
+            )
+
+        log(TAG, "Fetching lecture chunks from Supabase...")
         chunks = fetch_lecture_chunks(lecture_id)
         if not chunks:
-            raise ValueError("No indexed chunks found for this lecture.")
+            raise ValueError(
+                "No indexed chunks found for this lecture. Check that ingestion completed."
+            )
 
         sampled = sample_chunks(chunks)
+        log(
+            TAG,
+            f"Found {len(chunks)} chunks; sending {len(sampled)} to Gemini in 1 call.",
+        )
         study_set = call_gemini_study_set(build_batch_prompt(sampled))
+        log(
+            TAG,
+            f"Gemini returned {len(study_set.flashcards)} flashcards and {len(study_set.quiz)} quiz questions.",
+        )
 
         flashcards = clean_flashcards(study_set.flashcards, chunks)
         quiz = clean_quiz(study_set.quiz, chunks)
         if not flashcards and not quiz:
             raise ValueError("Gemini returned no usable flashcards or quiz questions.")
 
+        log(TAG, "Saving flashcards and quiz to Supabase...")
         save_study_artifact(
             lecture_id, user_id, "flashcards", status="completed", content=flashcards
         )
         save_study_artifact(
             lecture_id, user_id, "quiz", status="completed", content=quiz
         )
-        print(
-            f"--- STUDY SET COMPLETE: {len(flashcards)} flashcards, {len(quiz)} quiz questions ---"
+        log(
+            TAG,
+            f"--- STUDY SET COMPLETE: {len(flashcards)} flashcards, {len(quiz)} quiz questions ---",
         )
         return {"status": "completed", "flashcards": flashcards, "quiz": quiz}
 
     except Exception as e:
-        print(f"[STUDY SET ERROR]: {e}")
-        for kind in ("flashcards", "quiz"):
-            save_study_artifact(
-                lecture_id, user_id, kind, status="failed", error=str(e)
-            )
+        kind_label = "INVALID GEMINI KEY" if isinstance(e, GeminiKeyError) else "ERROR"
+        print(f"\n[STUDY SET {kind_label}] {e}", file=sys.stderr, flush=True)
+        if user_id:
+            try:
+                for kind in ("flashcards", "quiz"):
+                    save_study_artifact(
+                        lecture_id, user_id, kind, status="failed", error=str(e)
+                    )
+            except Exception as save_error:
+                print(
+                    f"[STUDY SET ERROR] Could not record the failure in Supabase: {save_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         return {"status": "failed", "error": str(e)}
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) != 2:
         print("Usage: python study_artifacts_engine.py <lecture_id>")
         sys.exit(1)
-    generate_study_set(sys.argv[1])
+    result = generate_study_set(sys.argv[1])
+    sys.exit(0 if result["status"] == "completed" else 1)
