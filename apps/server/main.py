@@ -26,6 +26,7 @@ from auth import get_current_user
 from audio_extractor import download_youtube_audio
 from asr_engine import transcribe_multilingual_audio
 from storage_utils import supabase
+from query_router import hybrid_intelligent_router
 from media_validator import (
     validate_and_save_upload,
     convert_to_mp3_if_needed,
@@ -50,7 +51,10 @@ app.add_middleware(
 UPLOAD_DIR = "temp_chunks"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-
+class RouterTestRequest(BaseModel):
+    query: str
+    lecture_id: str
+    
 class IngestYouTubeRequest(BaseModel):
     youtube_url: str
 
@@ -408,6 +412,16 @@ async def finalize_stream(payload: FinalizeStreamRequest):
         print(f"❌ Error finalizing stream session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/test/router")
+async def test_query_router(payload: RouterTestRequest):
+    """
+    Test endpoint for Task 13: Hybrid Intelligent Query Router.
+    """
+    try:
+        result = hybrid_intelligent_router(payload.query, payload.lecture_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
