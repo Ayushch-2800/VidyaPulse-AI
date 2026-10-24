@@ -1,16 +1,11 @@
-import os
 import re
-import time
 from typing import List, Dict, Any, Tuple
 
-from google import genai
-from google.genai import types
-
+# CHAT_MODEL is the free-tier Gemini Flash model (GEMINI_CHAT_MODEL env), re-exported for the engines
+from gemini_utils import CHAT_MODEL, generate_text
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 
-# Same free-tier Gemini key as the OCR engine. Override the model via env if Google renames it.
-CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
 NOT_COVERED = "Not covered in this lecture."
 MAX_CONTEXT_CHARS = (
     24000  # Keeps the prompt small so we stay well inside free-tier token limits
@@ -155,29 +150,9 @@ def validate_citations(
     return cleaned, citations
 
 
-def call_gemini(prompt: str, max_retries: int = 4) -> str:
-    """Calls Gemini Flash with backoff on free-tier 429/503 responses."""
-    client = genai.Client()  # Picks up GEMINI_API_KEY from the environment
-
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=CHAT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
-                ),
-            )
-            return (response.text or "").strip()
-        except Exception as e:
-            retryable = "429" in str(e) or "503" in str(e)
-            if retryable and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 5
-                print(f"[SYNTHESIZER WARNING] Gemini busy. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                raise
+def call_gemini(prompt: str) -> str:
+    """Calls Gemini Flash with a hard timeout and short logged backoff on free-tier 429/503."""
+    return generate_text(prompt, SYSTEM_PROMPT, temperature=0.2, tag="SYNTHESIZER")
 
 
 def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
