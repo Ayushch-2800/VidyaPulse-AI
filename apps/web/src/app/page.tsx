@@ -3,6 +3,11 @@ import Link from "next/link";
 const pages = [
   { href: "/login", label: "Log in", note: "Sign up or log in with Supabase" },
   {
+    href: "/chat",
+    label: "Ask a lecture",
+    note: "Chat with a lecture and jump to cited timestamps",
+  },
+  {
     href: "/ingest",
     label: "Ingest a lecture",
     note: "Process a YouTube lecture",
