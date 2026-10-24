@@ -27,6 +27,7 @@ from audio_extractor import download_youtube_audio
 from asr_engine import transcribe_multilingual_audio
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
+from synthesizer import synthesize_answer
 from media_validator import (
     validate_and_save_upload,
     convert_to_mp3_if_needed,
@@ -55,6 +56,11 @@ class RouterTestRequest(BaseModel):
     query: str
     lecture_id: str
     
+class ChatAskRequest(BaseModel):
+    query: str
+    lecture_id: str
+
+
 class IngestYouTubeRequest(BaseModel):
     youtube_url: str
 
@@ -422,6 +428,19 @@ async def test_query_router(payload: RouterTestRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/ask")
+def chat_ask(payload: ChatAskRequest):
+    """
+    Task 14: Grounded LLM Synthesizer. Returns a cited answer with [MM:SS] deep-links.
+    Declared as a sync route so FastAPI runs the blocking Gemini call in its threadpool.
+    """
+    try:
+        return synthesize_answer(payload.query, payload.lecture_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
