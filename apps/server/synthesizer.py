@@ -29,7 +29,7 @@ Strictly follow these rules:
 1. Answer ONLY from the lecture context blocks provided. Never use outside knowledge, even if you know the answer.
 2. Every factual sentence must cite where it came from using the timestamp of its context block in [MM:SS] format, e.g. "The derivative of sin x is cos x [04:12]."
 3. Only use timestamps that appear in the context block headers. Never invent timestamps.
-4. If the context does not contain the answer, reply with exactly: "{NOT_COVERED}" and nothing else.
+4. If the context does not contain the answer, reply with exactly: "{NOT_COVERED}" and nothing else. A request to summarize or give an overview of the lecture is always answerable from the context provided.
 5. Preserve all mathematics as LaTeX: use $...$ for inline math and $$...$$ for block equations. Copy formulas from the slide context exactly.
 6. The spoken transcript may be code-mixed (Hinglish, Tamil-English, etc.). Reply in the language the student used in their question.
 7. Be concise and structured. Use short markdown paragraphs or bullet points. No conversational filler.
@@ -204,6 +204,12 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
         f"LECTURE CONTEXT:\n\n{build_context_prompt(blocks)}\n\n"
         f"STUDENT QUESTION:\n{query}"
     )
+    if routed["intent"] == "overview":
+        prompt += (
+            f"\n\nNOTE: The student wants an overview. The {len(blocks)} blocks above are sampled evenly "
+            "across the whole lecture, in order. Summarize the lecture's main topics in the order they "
+            "are taught, citing each block's timestamp. Do not reply that it is not covered."
+        )
 
     print(
         f"[SYNTHESIZER] Generating answer with {CHAT_MODEL} from {len(blocks)} blocks..."
