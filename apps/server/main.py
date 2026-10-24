@@ -76,7 +76,9 @@ def warm_whisper_model() -> None:
         get_whisper_model()
     except Exception as e:
         # Not fatal: the first transcription tries to load it again
-        print(f"[ASR SETUP ERROR] Could not load the Whisper model yet: {e}", flush=True)
+        print(
+            f"[ASR SETUP ERROR] Could not load the Whisper model yet: {e}", flush=True
+        )
 
 
 @asynccontextmanager
@@ -109,10 +111,12 @@ app.add_middleware(
 UPLOAD_DIR = "temp_chunks"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+
 class RouterTestRequest(BaseModel):
     query: str
     lecture_id: str
-    
+
+
 class ChatAskRequest(BaseModel):
     query: str
     lecture_id: str
@@ -490,6 +494,7 @@ async def finalize_stream(payload: FinalizeStreamRequest):
         print(f"❌ Error finalizing stream session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/test/router")
 async def test_query_router(payload: RouterTestRequest):
     """
@@ -526,7 +531,9 @@ def get_cheat_sheet(lecture_id: str):
         .execute()
     )
     if not res.data:
-        raise HTTPException(status_code=404, detail="No cheat sheet for this lecture yet.")
+        raise HTTPException(
+            status_code=404, detail="No cheat sheet for this lecture yet."
+        )
     return res.data[0]
 
 
@@ -566,6 +573,71 @@ def regenerate_study_artifacts(lecture_id: str, background_tasks: BackgroundTask
     """
     background_tasks.add_task(generate_study_set, lecture_id)
     return {"status": "queued", "lecture_id": lecture_id}
+
+
+# PostgREST caps each response at 1000 rows, so long lectures are read page by page
+TRANSCRIPT_PAGE_SIZE = 1000
+
+
+def fetch_all_rows(table: str, columns: str, lecture_id: str, order: str):
+    rows, offset = [], 0
+    while True:
+        res = (
+            supabase.table(table)
+            .select(columns)
+            .eq("lecture_id", lecture_id)
+            .order(order)
+            .range(offset, offset + TRANSCRIPT_PAGE_SIZE - 1)
+            .execute()
+        )
+        page = res.data or []
+        rows.extend(page)
+        if len(page) < TRANSCRIPT_PAGE_SIZE:
+            return rows
+        offset += TRANSCRIPT_PAGE_SIZE
+
+
+@app.get("/lectures/{lecture_id}/transcript")
+def get_transcript(lecture_id: str):
+    """
+    Task 17: Returns the lecture's timed transcript for the synced sidebar.
+    YouTube ingestion writes multimodal_chunks; uploads only write Whisper segments
+    to transcript_chunks, so fall back to those when there are no multimodal chunks.
+    """
+    chunks = fetch_all_rows(
+        "multimodal_chunks",
+        "chunk_index, start_time_seconds, end_time_seconds, transcript_text",
+        lecture_id,
+        "chunk_index",
+    )
+    if chunks:
+        segments = [
+            {
+                "start": c["start_time_seconds"],
+                "end": c["end_time_seconds"],
+                "text": c["transcript_text"],
+            }
+            for c in chunks
+        ]
+    else:
+        segments = [
+            {"start": c["start_time"], "end": c["end_time"], "text": c["text_content"]}
+            for c in fetch_all_rows(
+                "transcript_chunks",
+                "chunk_index, start_time, end_time, text_content",
+                lecture_id,
+                "chunk_index",
+            )
+        ]
+
+    segments = [
+        s for s in segments if s["start"] is not None and (s["text"] or "").strip()
+    ]
+    if not segments:
+        raise HTTPException(
+            status_code=404, detail="No transcript for this lecture yet."
+        )
+    return {"lecture_id": lecture_id, "segments": segments}
 
 
 if __name__ == "__main__":

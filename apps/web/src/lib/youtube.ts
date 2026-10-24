@@ -9,6 +9,7 @@ export function extractYouTubeId(url: string): string | null {
 
 type YouTubePlayer = {
   seekTo(seconds: number, allowSeekAhead: boolean): void;
+  getCurrentTime(): number;
   playVideo(): void;
   destroy(): void;
 };

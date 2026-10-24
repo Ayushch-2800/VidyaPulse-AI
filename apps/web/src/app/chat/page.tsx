@@ -1,16 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import CitedAnswer from "@/components/chat/CitedAnswer";
 import LecturePlayer, {
   type LectureMedia,
   type LecturePlayerHandle,
 } from "@/components/chat/LecturePlayer";
+import TranscriptSidebar from "@/components/chat/TranscriptSidebar";
+import { API_URL } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import { createClient } from "@/lib/supabase/client";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Lecture IDs are Supabase UUIDs; only fetch a transcript once a full one is entered
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Lecture = {
   id: string;
@@ -45,6 +49,45 @@ const buttonStyle: React.CSSProperties = {
   cursor: "pointer",
 };
 
+// Memoized so the transcript's frequent time updates don't re-render every answer's markdown
+const ChatTurns = memo(function ChatTurns({
+  turns,
+  onSeek,
+}: {
+  turns: ChatTurn[];
+  onSeek: (seconds: number) => void;
+}) {
+  return (
+    <>
+      {turns.map((turn, i) => (
+        <div key={i}>
+          <p style={{ fontWeight: 600, margin: "0 0 8px 0" }}>{turn.query}</p>
+          <div
+            style={{
+              padding: "12px 16px",
+              border: "1px solid #E5E7EB",
+              borderRadius: "8px",
+              backgroundColor: "#F9FAFB",
+            }}
+          >
+            {turn.error ? (
+              <p style={{ margin: 0, color: "#B91C1C" }}>{turn.error}</p>
+            ) : turn.answer === undefined ? (
+              <p style={{ margin: 0, color: "#6B7280" }}>Thinking…</p>
+            ) : (
+              <CitedAnswer
+                answer={turn.answer}
+                citations={turn.citations}
+                onSeek={onSeek}
+              />
+            )}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+});
+
 export default function ChatPage() {
   const [supabase] = useState(createClient);
   const [lectures, setLectures] = useState<Lecture[]>([]);
@@ -55,7 +98,12 @@ export default function ChatPage() {
   const [query, setQuery] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
   const player = useRef<LecturePlayerHandle>(null);
+
+  const seek = useCallback((seconds: number) => {
+    player.current?.seek(seconds);
+  }, []);
 
   // Pick the player source for a lecture: its YouTube link, or a signed URL for an upload
   const showLectureMedia = (lecture: Lecture) => {
@@ -150,7 +198,7 @@ export default function ChatPage() {
   return (
     <div
       style={{
-        maxWidth: "800px",
+        maxWidth: "1200px",
         margin: "40px auto",
         padding: "24px",
         fontFamily: "system-ui, sans-serif",
@@ -201,52 +249,50 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {media && <LecturePlayer ref={player} media={media} />}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div style={{ minWidth: 0 }}>
+          {media && (
+            <LecturePlayer
+              key={media.url}
+              ref={player}
+              media={media}
+              onTimeUpdate={setCurrentTime}
+            />
+          )}
 
-      <div style={{ display: "grid", gap: "16px", margin: "24px 0" }}>
-        {turns.map((turn, i) => (
-          <div key={i}>
-            <p style={{ fontWeight: 600, margin: "0 0 8px 0" }}>{turn.query}</p>
-            <div
-              style={{
-                padding: "12px 16px",
-                border: "1px solid #E5E7EB",
-                borderRadius: "8px",
-                backgroundColor: "#F9FAFB",
-              }}
-            >
-              {turn.error ? (
-                <p style={{ margin: 0, color: "#B91C1C" }}>{turn.error}</p>
-              ) : turn.answer === undefined ? (
-                <p style={{ margin: 0, color: "#6B7280" }}>Thinking…</p>
-              ) : (
-                <CitedAnswer
-                  answer={turn.answer}
-                  citations={turn.citations}
-                  onSeek={(seconds) => player.current?.seek(seconds)}
-                />
-              )}
-            </div>
+          <div style={{ display: "grid", gap: "16px", margin: "24px 0" }}>
+            <ChatTurns turns={turns} onSeek={seek} />
           </div>
-        ))}
-      </div>
 
-      <form onSubmit={handleAsk} style={{ display: "flex", gap: "10px" }}>
-        <input
-          required
-          placeholder="Ask a question about this lecture"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          style={inputStyle}
-        />
-        <button
-          type="submit"
-          disabled={loading || !lectureId.trim()}
-          style={buttonStyle}
-        >
-          {loading ? "Asking…" : "Ask"}
-        </button>
-      </form>
+          <form onSubmit={handleAsk} style={{ display: "flex", gap: "10px" }}>
+            <input
+              required
+              placeholder="Ask a question about this lecture"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={inputStyle}
+            />
+            <button
+              type="submit"
+              disabled={loading || !lectureId.trim()}
+              style={buttonStyle}
+            >
+              {loading ? "Asking…" : "Ask"}
+            </button>
+          </form>
+        </div>
+
+        {UUID_PATTERN.test(lectureId.trim()) && (
+          <div className="h-[60vh] lg:sticky lg:top-6 lg:h-[calc(100vh-48px)]">
+            <TranscriptSidebar
+              key={lectureId.trim()}
+              lectureId={lectureId.trim()}
+              currentTime={currentTime}
+              onSeek={seek}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useImperativeHandle, useRef } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 
 import {
   extractYouTubeId,
@@ -11,28 +11,58 @@ import {
 export type LectureMedia =
   { kind: "youtube"; url: string } | { kind: "file"; url: string };
 
-export type LecturePlayerHandle = { seek: (seconds: number) => void };
+export type LecturePlayerHandle = {
+  seek: (seconds: number) => void;
+  getCurrentTime: () => number;
+};
+
+const AUDIO_EXTENSIONS = /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac|weba)$/i;
+
+// The YouTube API has no time events, so poll it this often for the transcript sync
+const YOUTUBE_POLL_MS = 250;
+
+/** True when the URL's path (ignoring a signed URL's query string) names an audio file. */
+export function isAudioUrl(url: string): boolean {
+  try {
+    return AUDIO_EXTENSIONS.test(new URL(url, "http://local").pathname);
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Plays a lecture from YouTube or a media file URL and exposes seek(seconds)
- * so CitedAnswer's [MM:SS] buttons can jump the player to a timestamp.
+ * Plays a lecture from YouTube or a media file URL, exposes seek(seconds) so
+ * CitedAnswer's [MM:SS] buttons can jump the player, and reports the playback
+ * position through onTimeUpdate so the transcript can follow along.
  */
 export default function LecturePlayer({
   media,
+  onTimeUpdate,
   ref,
 }: {
   media: LectureMedia;
+  onTimeUpdate?: (seconds: number) => void;
   ref?: React.Ref<LecturePlayerHandle>;
 }) {
   const youtubeHost = useRef<HTMLDivElement>(null);
   const youtubePlayer = useRef<YouTubePlayer | null>(null);
-  const mediaElement = useRef<HTMLVideoElement>(null);
+  const mediaElement = useRef<HTMLMediaElement>(null);
+  // Set when a file we expected to be video turns out to have no picture
+  const [noVideoTrack, setNoVideoTrack] = useState(false);
+  const reportTime = useRef(onTimeUpdate);
+
+  useEffect(() => {
+    reportTime.current = onTimeUpdate;
+  }, [onTimeUpdate]);
 
   const videoId = media.kind === "youtube" ? extractYouTubeId(media.url) : null;
+  const audioOnly =
+    media.kind === "file" && (isAudioUrl(media.url) || noVideoTrack);
 
   useEffect(() => {
     if (!videoId || !youtubeHost.current) return;
     let cancelled = false;
+    let lastTime = -1;
     // The YouTube API replaces the element it is given, so hand it a child we own
     const target = document.createElement("div");
     youtubeHost.current.replaceChildren(target);
@@ -46,8 +76,18 @@ export default function LecturePlayer({
       });
     });
 
+    const poll = window.setInterval(() => {
+      // getCurrentTime only exists once the player has finished loading
+      const time = youtubePlayer.current?.getCurrentTime?.();
+      if (typeof time === "number" && time !== lastTime) {
+        lastTime = time;
+        reportTime.current?.(time);
+      }
+    }, YOUTUBE_POLL_MS);
+
     return () => {
       cancelled = true;
+      window.clearInterval(poll);
       youtubePlayer.current?.destroy();
       youtubePlayer.current = null;
     };
@@ -58,10 +98,17 @@ export default function LecturePlayer({
       if (youtubePlayer.current) {
         youtubePlayer.current.seekTo(seconds, true);
         youtubePlayer.current.playVideo();
+        reportTime.current?.(seconds);
       } else if (mediaElement.current) {
         mediaElement.current.currentTime = seconds;
         void mediaElement.current.play();
       }
+    },
+    getCurrentTime() {
+      if (youtubePlayer.current?.getCurrentTime) {
+        return youtubePlayer.current.getCurrentTime();
+      }
+      return mediaElement.current?.currentTime ?? 0;
     },
   }));
 
@@ -88,18 +135,59 @@ export default function LecturePlayer({
     );
   }
 
-  // A <video> element also plays audio-only files such as the uploaded MP3s
+  const mediaEvents = {
+    onTimeUpdate: (e: React.SyntheticEvent<HTMLMediaElement>) =>
+      reportTime.current?.(e.currentTarget.currentTime),
+    onSeeked: (e: React.SyntheticEvent<HTMLMediaElement>) =>
+      reportTime.current?.(e.currentTarget.currentTime),
+  };
+
+  if (audioOnly) {
+    return (
+      <div
+        style={{
+          padding: "16px",
+          border: "1px solid #E5E7EB",
+          borderRadius: "8px",
+          backgroundColor: "#F9FAFB",
+        }}
+      >
+        <p style={{ margin: "0 0 8px 0", color: "#6B7280", fontSize: "0.9em" }}>
+          🎧 Audio lecture
+        </p>
+        <audio
+          ref={(el) => {
+            mediaElement.current = el;
+          }}
+          src={media.url}
+          controls
+          preload="metadata"
+          style={{ width: "100%" }}
+          {...mediaEvents}
+        />
+      </div>
+    );
+  }
+
   return (
     <video
-      ref={mediaElement}
+      ref={(el) => {
+        mediaElement.current = el;
+      }}
       src={media.url}
       controls
+      preload="metadata"
+      onLoadedMetadata={(e) => {
+        // No extension to go on (e.g. a bare signed URL), so check for a picture once loaded
+        if (e.currentTarget.videoWidth === 0) setNoVideoTrack(true);
+      }}
       style={{
         width: "100%",
         maxHeight: "360px",
         backgroundColor: "#000",
         borderRadius: "8px",
       }}
+      {...mediaEvents}
     />
   );
 }
