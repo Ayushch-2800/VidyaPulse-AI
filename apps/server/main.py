@@ -24,10 +24,7 @@ from embedding_engine import index_multimodal_chunks
 
 from auth import get_current_user
 from audio_extractor import download_youtube_audio
-from asr_engine import (
-    transcribe_multilingual_audio,
-    build_semantic_chunks_multilingual,
-)
+from asr_engine import transcribe_multilingual_audio
 from storage_utils import supabase
 from media_validator import (
     validate_and_save_upload,
@@ -105,19 +102,16 @@ def process_ingestion_pipeline(
         detected_lang = asr_result["detected_language"]
         segments = asr_result["segments"]
 
-        # 2. Build ~45-second Semantic Chunks
-        chunks = build_semantic_chunks_multilingual(segments, target_duration=45.0)
-
-        # 3. Insert into Supabase transcript_chunks table
+        # 2 & 3. Insert Whisper segments directly into Supabase transcript_chunks table
         db_chunks = []
-        for index, chunk in enumerate(chunks):
+        for index, segment in enumerate(segments):
             db_chunks.append(
                 {
                     "lecture_id": lecture_id,
                     "chunk_index": index,
-                    "text_content": chunk["chunk_text"],
-                    "start_time": chunk["start_time"],
-                    "end_time": chunk["end_time"],
+                    "text_content": segment["text"],
+                    "start_time": segment["start_time_seconds"],
+                    "end_time": segment["end_time_seconds"],
                     "language": detected_lang,
                 }
             )
@@ -199,7 +193,7 @@ async def ingest_video_pipeline(payload: IngestYouTubeRequest):
         print(f"--- STARTING UNIFIED INGESTION FOR LECTURE {lecture_id} ---")
 
         # ==========================================
-        # TASK 9: Audio Transcription
+        # TASK 9: Audio Transcription (Local Whisper)
         # ==========================================
         print("[1/4] Running Audio Transcription...")
         asr_result = transcribe_multilingual_audio(
