@@ -1,3 +1,5 @@
+import "./globals.css";
+
 export const metadata = {
   title: "VidyaPulse AI",
   description: "Multimodal Lecture Intelligence Platform",
