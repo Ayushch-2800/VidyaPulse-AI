@@ -1,68 +1,130 @@
 "use client";
 
-// Matches the [MM:SS] citations produced by the backend synthesizer (minutes may exceed 59)
-const TIMESTAMP_PATTERN = /\[(\d{1,3}):([0-5]\d)\]/g;
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
-type Segment =
-  | { type: "text"; value: string }
-  | { type: "timestamp"; label: string; seconds: number };
+import {
+  linkifyCitations,
+  normalizeDisplayMath,
+  seekSecondsFromHref,
+  type Citation,
+} from "@/lib/citations";
 
-export function splitCitations(answer: string): Segment[] {
-  const segments: Segment[] = [];
-  let lastIndex = 0;
+const NOT_COVERED = "Not covered in this lecture.";
 
-  for (const match of answer.matchAll(TIMESTAMP_PATTERN)) {
-    const index = match.index ?? 0;
-    if (index > lastIndex) {
-      segments.push({ type: "text", value: answer.slice(lastIndex, index) });
-    }
-    segments.push({
-      type: "timestamp",
-      label: `${match[1]}:${match[2]}`,
-      seconds: Number(match[1]) * 60 + Number(match[2]),
-    });
-    lastIndex = index + match[0].length;
-  }
+const seekButtonStyle: React.CSSProperties = {
+  margin: "0 2px",
+  padding: "1px 8px",
+  borderRadius: "999px",
+  border: "1px solid #0070f3",
+  backgroundColor: "#EFF6FF",
+  color: "#0070f3",
+  fontSize: "0.85em",
+  fontVariantNumeric: "tabular-nums",
+  cursor: "pointer",
+  verticalAlign: "baseline",
+};
 
-  if (lastIndex < answer.length) {
-    segments.push({ type: "text", value: answer.slice(lastIndex) });
-  }
-  return segments;
-}
-
-export default function CitedAnswer({
-  answer,
+function SeekButton({
+  label,
+  seconds,
   onSeek,
 }: {
-  answer: string;
+  label: string;
+  seconds: number;
   onSeek: (seconds: number) => void;
 }) {
   return (
-    <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.6, margin: 0 }}>
-      {splitCitations(answer).map((segment, i) =>
-        segment.type === "text" ? (
-          <span key={i}>{segment.value}</span>
-        ) : (
-          <button
-            key={i}
-            type="button"
-            onClick={() => onSeek(segment.seconds)}
-            title={`Jump to ${segment.label} in the lecture`}
-            style={{
-              margin: "0 2px",
-              padding: "1px 8px",
-              borderRadius: "999px",
-              border: "1px solid #0070f3",
-              backgroundColor: "#EFF6FF",
-              color: "#0070f3",
-              fontSize: "0.85em",
-              cursor: "pointer",
-            }}
-          >
-            ▶ {segment.label}
-          </button>
-        ),
+    <button
+      type="button"
+      onClick={() => onSeek(seconds)}
+      title={`Jump to ${label} in the lecture`}
+      aria-label={`Jump to ${label} in the lecture`}
+      style={seekButtonStyle}
+    >
+      ▶ {label}
+    </button>
+  );
+}
+
+/**
+ * Renders a synthesizer answer as markdown with KaTeX math, turning every [MM:SS]
+ * citation into a button that calls onSeek(seconds) on the lecture player.
+ */
+export default function CitedAnswer({
+  answer,
+  citations = [],
+  onSeek,
+}: {
+  answer: string;
+  citations?: Citation[];
+  onSeek: (seconds: number) => void;
+}) {
+  if (answer.trim() === NOT_COVERED) {
+    return (
+      <p style={{ margin: 0, color: "#6B7280", fontStyle: "italic" }}>
+        {NOT_COVERED}
+      </p>
+    );
+  }
+
+  const components: Components = {
+    a({ href, children }) {
+      const seconds = seekSecondsFromHref(href);
+      if (seconds !== null) {
+        return (
+          <SeekButton
+            label={String(children)}
+            seconds={seconds}
+            onSeek={onSeek}
+          />
+        );
+      }
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer">
+          {children}
+        </a>
+      );
+    },
+  };
+
+  return (
+    <div style={{ lineHeight: 1.6 }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={components}
+      >
+        {linkifyCitations(normalizeDisplayMath(answer))}
+      </ReactMarkdown>
+
+      {citations.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "6px",
+            marginTop: "8px",
+            fontSize: "0.9em",
+            color: "#6B7280",
+          }}
+        >
+          <span>Sources:</span>
+          {[...citations]
+            .sort((a, b) => a.seconds - b.seconds)
+            .map((c) => (
+              <SeekButton
+                key={c.seconds}
+                label={c.label}
+                seconds={c.seconds}
+                onSeek={onSeek}
+              />
+            ))}
+        </div>
       )}
-    </p>
+    </div>
   );
 }
