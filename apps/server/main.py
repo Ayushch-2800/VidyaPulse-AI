@@ -1,23 +1,40 @@
 import faulthandler
+import os
 import sys
+import threading
 import time
 
-# Nothing below makes a network call at import time. If an import still stalls,
-# this prints where it is stuck every 60s instead of freezing silently.
+# Nothing below makes a network call or loads a heavy library at import time.
+# yt-dlp, static-ffmpeg, faster-whisper and OpenCV are imported only where they are used.
 print("[STARTUP] Importing modules...", flush=True)
 _import_started = time.monotonic()
-faulthandler.dump_traceback_later(60, repeat=True, file=sys.stderr)
+SLOW_IMPORT_SECONDS = float(os.getenv("STARTUP_SLOW_IMPORT_SECONDS", "60"))
 
-import os
-import threading
+
+def _report_slow_import() -> None:
+    """Prints which line the import is on every 60s; the server keeps loading meanwhile."""
+    global _slow_import_timer
+    print(
+        f"\n[STARTUP] Still importing after {time.monotonic() - _import_started:.0f}s. "
+        "In the thread that ends in main.py '<module>', the top 'File' line is what is slow:",
+        file=sys.stderr,
+        flush=True,
+    )
+    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+    _slow_import_timer = threading.Timer(SLOW_IMPORT_SECONDS, _report_slow_import)
+    _slow_import_timer.daemon = True
+    _slow_import_timer.start()
+
+
+_slow_import_timer = threading.Timer(SLOW_IMPORT_SECONDS, _report_slow_import)
+_slow_import_timer.daemon = True
+_slow_import_timer.start()
+
 from contextlib import asynccontextmanager
-
-import static_ffmpeg
 
 import uuid
 import uvicorn
 import mimetypes
-import yt_dlp
 from fastapi import (
     FastAPI,
     Depends,
@@ -34,8 +51,6 @@ from temporal_chunker import align_multimodal_chunks
 from embedding_engine import index_multimodal_chunks
 
 from auth import get_current_user
-from audio_extractor import download_youtube_audio
-from asr_engine import get_whisper_model, transcribe_multilingual_audio
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 from synthesizer import synthesize_answer
@@ -46,10 +61,8 @@ from media_validator import (
     convert_to_mp3_if_needed,
     get_media_duration_seconds,
 )
-from vision_extractor import process_video_keyframes
-from temporal_chunker import align_multimodal_chunks
 
-faulthandler.cancel_dump_traceback_later()
+_slow_import_timer.cancel()
 print(
     f"[STARTUP] Modules imported in {time.monotonic() - _import_started:.1f}s.",
     flush=True,
@@ -58,6 +71,8 @@ print(
 
 def warm_whisper_model() -> None:
     try:
+        from asr_engine import get_whisper_model
+
         get_whisper_model()
     except Exception as e:
         # Not fatal: the first transcription tries to load it again
@@ -68,10 +83,13 @@ def warm_whisper_model() -> None:
 async def lifespan(app: FastAPI):
     # Puts the bundled ffmpeg on PATH; it downloads only on the very first run
     print("[STARTUP] Adding ffmpeg to PATH...", flush=True)
+    import static_ffmpeg
+
     static_ffmpeg.add_paths()
     # Warm the local Whisper model in the background so startup completes immediately;
     # the first transcription waits for it if it is still loading
     threading.Thread(target=warm_whisper_model, daemon=True).start()
+    print("[STARTUP] Ready. Whisper keeps loading in the background.", flush=True)
     yield
 
 
@@ -128,6 +146,10 @@ def process_ingestion_pipeline(
     Executes frame extraction, Pan-India Multilingual ASR, semantic chunking, and database persistence
     asynchronously for background file processing.
     """
+    # Heavy libraries (faster-whisper, OpenCV) load on the first ingestion, not at server boot
+    from asr_engine import transcribe_multilingual_audio
+    from vision_extractor import process_video_keyframes
+
     try:
         # Keyframe Extraction for Video files
         if original_file_path and user_id:
@@ -200,6 +222,10 @@ def process_ingestion_pipeline(
 async def ingest_video_pipeline(
     payload: IngestYouTubeRequest, background_tasks: BackgroundTasks
 ):
+    import yt_dlp
+    from asr_engine import transcribe_multilingual_audio
+    from vision_extractor import process_video_keyframes
+
     youtube_url = payload.youtube_url
     user_id = "74a53efe-4184-4c33-bffa-ab99456c5ffb"
 
