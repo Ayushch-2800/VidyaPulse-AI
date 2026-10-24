@@ -28,6 +28,7 @@ from asr_engine import transcribe_multilingual_audio
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 from synthesizer import synthesize_answer
+from cheat_sheet_engine import generate_cheat_sheet
 from media_validator import (
     validate_and_save_upload,
     convert_to_mp3_if_needed,
@@ -158,7 +159,9 @@ def process_ingestion_pipeline(
 
 
 @app.post("/ingest/youtube")
-async def ingest_video_pipeline(payload: IngestYouTubeRequest):
+async def ingest_video_pipeline(
+    payload: IngestYouTubeRequest, background_tasks: BackgroundTasks
+):
     youtube_url = payload.youtube_url
     user_id = "74a53efe-4184-4c33-bffa-ab99456c5ffb"
 
@@ -248,6 +251,9 @@ async def ingest_video_pipeline(payload: IngestYouTubeRequest):
         ).eq("id", lecture_id).execute()
 
         print("--- INGESTION COMPLETE ---")
+
+        # TASK 15: Build the cheat sheet after the response is sent
+        background_tasks.add_task(generate_cheat_sheet, lecture_id)
 
         return {
             "status": "success",
@@ -440,6 +446,31 @@ def chat_ask(payload: ChatAskRequest):
         return synthesize_answer(payload.query, payload.lecture_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/lectures/{lecture_id}/cheatsheet")
+def get_cheat_sheet(lecture_id: str):
+    """
+    Task 15: Returns the stored cheat sheet and its generation status.
+    """
+    res = (
+        supabase.table("cheat_sheets")
+        .select("lecture_id, status, content, topic_tags, model, error, updated_at")
+        .eq("lecture_id", lecture_id)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="No cheat sheet for this lecture yet.")
+    return res.data[0]
+
+
+@app.post("/lectures/{lecture_id}/cheatsheet", status_code=status.HTTP_202_ACCEPTED)
+def regenerate_cheat_sheet(lecture_id: str, background_tasks: BackgroundTasks):
+    """
+    Task 15: Queues (re)generation of a lecture's cheat sheet in the background.
+    """
+    background_tasks.add_task(generate_cheat_sheet, lecture_id)
+    return {"status": "queued", "lecture_id": lecture_id}
 
 
 if __name__ == "__main__":

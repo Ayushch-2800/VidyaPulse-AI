@@ -1,0 +1,537 @@
+[
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Kinematics in one and two dimensions"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Newton's laws of motion"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Work, energy and power"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Rotational motion and moment of inertia"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Gravitation"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Simple harmonic motion"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Thermodynamics"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Electrostatics and Gauss's law"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Current electricity and Kirchhoff's laws"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Electromagnetic induction"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Ray optics and optical instruments"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Wave optics and interference"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Physics",
+    "topic": "Modern physics and photoelectric effect"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Mole concept and stoichiometry"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Atomic structure"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Chemical bonding and molecular structure"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Chemical thermodynamics"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Chemical equilibrium"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Ionic equilibrium and pH"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Electrochemistry"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Chemical kinetics"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Organic reaction mechanisms"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Chemistry",
+    "topic": "Coordination compounds"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Quadratic equations"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Sequences and series"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Trigonometric identities and equations"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Permutations and combinations"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Binomial theorem"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Matrices and determinants"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Limits and continuity"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Differentiation and applications of derivatives"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Definite and indefinite integration"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Differential equations"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Coordinate geometry of conic sections"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Vectors and three-dimensional geometry"
+  },
+  {
+    "exam": "JEE",
+    "subject": "Mathematics",
+    "topic": "Probability"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Cell structure and cell cycle"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Biomolecules and enzymes"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Photosynthesis in higher plants"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Respiration in plants"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Human digestion and absorption"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Breathing and exchange of gases"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Body fluids and circulation"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Neural control and coordination"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Principles of inheritance and variation"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Molecular basis of inheritance"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Evolution"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Ecosystem and biodiversity"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Human reproduction"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Biology",
+    "topic": "Biotechnology principles and processes"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Laws of motion"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Thermodynamics"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Electrostatics"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Current electricity"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Optics"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Dual nature of radiation and matter"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Physics",
+    "topic": "Semiconductor electronics"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Chemistry",
+    "topic": "Chemical bonding"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Chemistry",
+    "topic": "Equilibrium"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Chemistry",
+    "topic": "Hydrocarbons"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Chemistry",
+    "topic": "Haloalkanes and haloarenes"
+  },
+  {
+    "exam": "NEET",
+    "subject": "Chemistry",
+    "topic": "Biomolecules"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Data structures"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Algorithms and complexity analysis"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Theory of computation and automata"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Compiler design"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Operating systems"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Databases and SQL"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Computer networks"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Digital logic"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Computer organization and architecture"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Computer Science",
+    "topic": "Discrete mathematics and graph theory"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Electrical Engineering",
+    "topic": "Electric circuits and network theorems"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Electrical Engineering",
+    "topic": "Signals and systems"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Electrical Engineering",
+    "topic": "Control systems"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Electrical Engineering",
+    "topic": "Electrical machines"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Electrical Engineering",
+    "topic": "Power systems"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Electrical Engineering",
+    "topic": "Analog and digital electronics"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Mechanical Engineering",
+    "topic": "Engineering mechanics"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Mechanical Engineering",
+    "topic": "Strength of materials"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Mechanical Engineering",
+    "topic": "Fluid mechanics"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Mechanical Engineering",
+    "topic": "Heat transfer"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Mechanical Engineering",
+    "topic": "Thermodynamics cycles"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Mechanical Engineering",
+    "topic": "Theory of machines"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Engineering Mathematics",
+    "topic": "Linear algebra and eigenvalues"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Engineering Mathematics",
+    "topic": "Calculus and multivariable calculus"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Engineering Mathematics",
+    "topic": "Probability and statistics"
+  },
+  {
+    "exam": "GATE",
+    "subject": "Engineering Mathematics",
+    "topic": "Numerical methods"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Polity",
+    "topic": "Fundamental rights and duties"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Polity",
+    "topic": "Directive principles of state policy"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Polity",
+    "topic": "Parliament and state legislatures"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Polity",
+    "topic": "Judiciary and judicial review"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Polity",
+    "topic": "Federalism and centre-state relations"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Economy",
+    "topic": "National income accounting"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Economy",
+    "topic": "Inflation and monetary policy"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Economy",
+    "topic": "Fiscal policy and budgeting"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Economy",
+    "topic": "Banking and financial markets"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Economy",
+    "topic": "International trade and balance of payments"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "History",
+    "topic": "Indus valley civilization"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "History",
+    "topic": "Mauryan and Gupta empires"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "History",
+    "topic": "Mughal empire"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "History",
+    "topic": "Indian national movement"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "History",
+    "topic": "Post-independence consolidation"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Geography",
+    "topic": "Physical geography of India"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Geography",
+    "topic": "Climate and monsoon"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Geography",
+    "topic": "Indian rivers and drainage"
+  },
+  {
+    "exam": "UPSC",
+    "subject": "Geography",
+    "topic": "Agriculture and resources"
+  }
+]
