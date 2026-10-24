@@ -1,18 +1,27 @@
 import os
 from typing import List, Dict, Any
-import google.generativeai as genai
-from google.api_core import retry as api_retry
 from storage_utils import supabase
-
-# REST instead of gRPC: gRPC channel setup can stall silently on some networks and has no timeout
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"), transport="rest")
 
 # Fixed model name, no catalog lookup: listing models was a network call at import time that
 # could freeze every script importing this module. gemini-embedding-001 is the Gemini embedding
 # model that supports output_dimensionality=1536. Override if your chunks used another model.
 VALID_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
 EMBED_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
-print(f"[EMBEDDING SETUP]: Using embedding model {VALID_MODEL}", flush=True)
+
+_genai = None
+
+
+def get_genai():
+    """Imports and configures the Gemini embedding SDK on first use, never at import time."""
+    global _genai
+    if _genai is None:
+        import google.generativeai as genai
+
+        # REST instead of gRPC: gRPC channel setup can stall silently on some networks
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"), transport="rest")
+        print(f"[EMBEDDING SETUP]: Using embedding model {VALID_MODEL}", flush=True)
+        _genai = genai
+    return _genai
 
 
 def generate_embeddings(texts: List[str]) -> List[List[float]]:
@@ -23,8 +32,10 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
 
+    from google.api_core import retry as api_retry
+
     try:
-        response = genai.embed_content(
+        response = get_genai().embed_content(
             model=VALID_MODEL,
             content=texts,
             task_type="semantic_similarity",

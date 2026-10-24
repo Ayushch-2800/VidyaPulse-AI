@@ -63,26 +63,28 @@ def check_environment(tag: str) -> None:
 
 def preload(tag: str) -> None:
     """
-    Imports the Supabase and Gemini modules one at a time with a log line per step, so a
+    Sets up the Supabase client and the Gemini SDKs one at a time with a log line per step, so a
     stall shows exactly which step it is. A watchdog prints the stuck stack trace and exits
     if any step takes longer than STARTUP_TIMEOUT_SECONDS.
     """
+    from embedding_engine import get_genai
+    from storage_utils import get_supabase
+
     steps = (
-        ("Creating Supabase client", "storage_utils"),
-        ("Loading the google-genai SDK", "google.genai"),
-        ("Loading the google-generativeai SDK", "google.generativeai"),
-        ("Configuring the embedding model", "embedding_engine"),
+        ("Creating Supabase client", get_supabase),
+        ("Loading the google-genai SDK", lambda: importlib.import_module("google.genai")),
+        ("Loading and configuring the Gemini embedding SDK", get_genai),
     )
     log(
         tag,
         f"Loading Supabase and Gemini. A step stuck for {STARTUP_TIMEOUT_SECONDS}s prints its stack trace and exits.",
     )
-    for label, module in steps:
+    for label, step in steps:
         log(tag, f"{label}...")
         started = time.monotonic()
         faulthandler.dump_traceback_later(STARTUP_TIMEOUT_SECONDS, exit=True, file=sys.stderr)
         try:
-            importlib.import_module(module)
+            step()
         finally:
             faulthandler.cancel_dump_traceback_later()
         log(tag, f"{label}: done in {time.monotonic() - started:.1f}s.")
@@ -231,9 +233,10 @@ def embed_texts(texts: List[str], tag: str) -> List[List[float]]:
     Embeds texts with the same model and 1536-d settings as embedding_engine.generate_embeddings,
     in small paced batches with a hard timeout and logged retries. Raises instead of returning [].
     """
-    import google.generativeai as legacy_genai
     from google.api_core import retry as api_retry
-    from embedding_engine import VALID_MODEL
+    from embedding_engine import VALID_MODEL, get_genai
+
+    legacy_genai = get_genai()
 
     vectors: List[List[float]] = []
     for start in range(0, len(texts), EMBED_BATCH_SIZE):

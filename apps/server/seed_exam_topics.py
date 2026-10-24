@@ -1,8 +1,6 @@
-import importlib
 import json
 import os
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -140,28 +138,10 @@ def seed_exam_topics() -> int:
     }
     log(f"[SEED] Supabase OK. {len(done)} topics already embedded.")
 
-    log(
-        "[SEED] Connecting to Gemini and resolving the embedding model (same one used for lecture chunks)..."
-    )
-    import google.generativeai as genai
+    log("[SEED] Configuring Gemini (same embedding model used for lecture chunks)...")
+    from embedding_engine import VALID_MODEL, get_genai
 
-    # embedding_engine resolves the model with a network call at import time; guard it with a timeout
-    resolved = {}
-    loader = threading.Thread(
-        target=lambda: resolved.update(
-            model=importlib.import_module("embedding_engine").VALID_MODEL
-        ),
-        daemon=True,
-    )
-    loader.start()
-    loader.join(REQUEST_TIMEOUT_SECONDS)
-    if "model" not in resolved:
-        fail(
-            f"Gemini did not respond within {REQUEST_TIMEOUT_SECONDS}s while listing models. "
-            "Check your network and GEMINI_API_KEY."
-        )
-    VALID_MODEL = resolved["model"]
-
+    genai = get_genai()
     log(f"[SEED] Using embedding model {VALID_MODEL}")
 
     rows = json.loads(SEED_FILE.read_text())

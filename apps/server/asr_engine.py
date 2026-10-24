@@ -1,12 +1,32 @@
 import os
+import threading
 from typing import Dict, Any
 from faster_whisper import WhisperModel
 
-# 1. Load the model globally so it initializes only once when the server starts.
+# 1. Load the model once per process, on first use rather than at import time.
 # We use "base" on "cpu" with "int8" for extreme speed and low RAM usage.
-print("[ASR SETUP] Loading local Whisper model...")
-model = WhisperModel("base", device="cpu", compute_type="int8")
-print("[ASR SETUP] Whisper model loaded successfully.")
+_model = None
+_model_lock = threading.Lock()
+
+
+def get_whisper_model() -> WhisperModel:
+    global _model
+    with _model_lock:
+        if _model is None:
+            print("[ASR SETUP] Loading local Whisper model...", flush=True)
+            try:
+                # Use the cached copy without asking Hugging Face for updates (a network call)
+                _model = WhisperModel(
+                    "base", device="cpu", compute_type="int8", local_files_only=True
+                )
+            except Exception:
+                print(
+                    "[ASR SETUP] Whisper model not cached yet, downloading it once...",
+                    flush=True,
+                )
+                _model = WhisperModel("base", device="cpu", compute_type="int8")
+            print("[ASR SETUP] Whisper model loaded successfully.", flush=True)
+    return _model
 
 
 def transcribe_multilingual_audio(
@@ -23,7 +43,7 @@ def transcribe_multilingual_audio(
 
     try:
         # 2. Transcribe the audio
-        segments, info = model.transcribe(file_path, beam_size=5)
+        segments, info = get_whisper_model().transcribe(file_path, beam_size=5)
 
         detected_lang = info.language
         print(
