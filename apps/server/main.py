@@ -29,6 +29,7 @@ from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 from synthesizer import synthesize_answer
 from cheat_sheet_engine import generate_cheat_sheet
+from study_artifacts_engine import generate_study_set
 from media_validator import (
     validate_and_save_upload,
     convert_to_mp3_if_needed,
@@ -254,6 +255,8 @@ async def ingest_video_pipeline(
 
         # TASK 15: Build the cheat sheet after the response is sent
         background_tasks.add_task(generate_cheat_sheet, lecture_id)
+        # TASK 16: Flashcards + quiz, queued after the cheat sheet so the two Gemini jobs run one at a time
+        background_tasks.add_task(generate_study_set, lecture_id)
 
         return {
             "status": "success",
@@ -470,6 +473,35 @@ def regenerate_cheat_sheet(lecture_id: str, background_tasks: BackgroundTasks):
     Task 15: Queues (re)generation of a lecture's cheat sheet in the background.
     """
     background_tasks.add_task(generate_cheat_sheet, lecture_id)
+    return {"status": "queued", "lecture_id": lecture_id}
+
+
+@app.get("/lectures/{lecture_id}/study-artifacts")
+def get_study_artifacts(lecture_id: str):
+    """
+    Task 16: Returns the lecture's flashcards and quiz, keyed by kind, with their status.
+    """
+    res = (
+        supabase.table("study_artifacts")
+        .select("kind, status, content, model, error, updated_at")
+        .eq("lecture_id", lecture_id)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(
+            status_code=404, detail="No study artifacts for this lecture yet."
+        )
+    return {row["kind"]: row for row in res.data}
+
+
+@app.post(
+    "/lectures/{lecture_id}/study-artifacts", status_code=status.HTTP_202_ACCEPTED
+)
+def regenerate_study_artifacts(lecture_id: str, background_tasks: BackgroundTasks):
+    """
+    Task 16: Queues (re)generation of the lecture's flashcards and quiz in the background.
+    """
+    background_tasks.add_task(generate_study_set, lecture_id)
     return {"status": "queued", "lecture_id": lecture_id}
 
 
