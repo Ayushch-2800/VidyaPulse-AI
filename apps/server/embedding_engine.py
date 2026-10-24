@@ -1,35 +1,18 @@
 import os
 from typing import List, Dict, Any
 import google.generativeai as genai
+from google.api_core import retry as api_retry
 from storage_utils import supabase
 
-# Uses the same GEMINI_API_KEY you already set up for the Vision task
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+# REST instead of gRPC: gRPC channel setup can stall silently on some networks and has no timeout
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"), transport="rest")
 
-
-def get_valid_embedding_model():
-    """Queries Google's API to find the exact embedding model authorized for your key."""
-    print("[EMBEDDING SETUP]: Resolving Gemini embedding model...", flush=True)
-    try:
-        # Timeout so a slow or rate-limited API fails over instead of hanging every import
-        for m in genai.list_models(request_options={"timeout": 30}):
-            # Check if the model supports the 'embedContent' method
-            if "embedContent" in m.supported_generation_methods:
-                return m.name
-    except Exception as e:
-        print(f"[EMBEDDING SETUP ERROR]: Could not fetch models list: {e}")
-
-    # Fallback to the current standard if dynamic fetch fails
-    print(
-        "[EMBEDDING SETUP]: WARNING - falling back to models/text-embedding-004. "
-        "If your chunks were embedded with a different model, similarity scores will be wrong.",
-        flush=True,
-    )
-    return "models/text-embedding-004"
-
-
-# Fetch and store the authorized model name automatically
-VALID_MODEL = get_valid_embedding_model()
+# Fixed model name, no catalog lookup: listing models was a network call at import time that
+# could freeze every script importing this module. gemini-embedding-001 is the Gemini embedding
+# model that supports output_dimensionality=1536. Override if your chunks used another model.
+VALID_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
+EMBED_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
+print(f"[EMBEDDING SETUP]: Using embedding model {VALID_MODEL}", flush=True)
 
 
 def generate_embeddings(texts: List[str]) -> List[List[float]]:
@@ -46,6 +29,13 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
             content=texts,
             task_type="semantic_similarity",
             output_dimensionality=1536,  # <-- Forces Gemini to match your Supabase table size
+            request_options={
+                "timeout": EMBED_TIMEOUT_SECONDS,
+                # Retry 429/503 briefly, but never wait more than 2 minutes in total
+                "retry": api_retry.Retry(
+                    predicate=api_retry.if_transient_error, timeout=120
+                ),
+            },
         )
         # Gemini returns a list of embeddings when provided a list of texts
         return response["embedding"]

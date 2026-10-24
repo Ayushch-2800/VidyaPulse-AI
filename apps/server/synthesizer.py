@@ -1,16 +1,11 @@
-import os
 import re
-import time
 from typing import List, Dict, Any, Tuple
 
-from google import genai
-from google.genai import types
-
+# CHAT_MODEL is the free-tier Gemini Flash model (GEMINI_CHAT_MODEL env), re-exported for the engines
+from gemini_utils import CHAT_MODEL, generate_text
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 
-# Same free-tier Gemini key as the OCR engine. Override the model via env if Google renames it.
-CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
 NOT_COVERED = "Not covered in this lecture."
 MAX_CONTEXT_CHARS = (
     24000  # Keeps the prompt small so we stay well inside free-tier token limits
@@ -29,7 +24,7 @@ Strictly follow these rules:
 1. Answer ONLY from the lecture context blocks provided. Never use outside knowledge, even if you know the answer.
 2. Every factual sentence must cite where it came from using the timestamp of its context block in [MM:SS] format, e.g. "The derivative of sin x is cos x [04:12]."
 3. Only use timestamps that appear in the context block headers. Never invent timestamps.
-4. If the context does not contain the answer, reply with exactly: "{NOT_COVERED}" and nothing else.
+4. If the context does not contain the answer, reply with exactly: "{NOT_COVERED}" and nothing else. A request to summarize or give an overview of the lecture is always answerable from the context provided.
 5. Preserve all mathematics as LaTeX: use $...$ for inline math and $$...$$ for block equations. Copy formulas from the slide context exactly.
 6. The spoken transcript may be code-mixed (Hinglish, Tamil-English, etc.). Reply in the language the student used in their question.
 7. Be concise and structured. Use short markdown paragraphs or bullet points. No conversational filler.
@@ -155,29 +150,9 @@ def validate_citations(
     return cleaned, citations
 
 
-def call_gemini(prompt: str, max_retries: int = 4) -> str:
-    """Calls Gemini Flash with backoff on free-tier 429/503 responses."""
-    client = genai.Client()  # Picks up GEMINI_API_KEY from the environment
-
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=CHAT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
-                ),
-            )
-            return (response.text or "").strip()
-        except Exception as e:
-            retryable = "429" in str(e) or "503" in str(e)
-            if retryable and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 5
-                print(f"[SYNTHESIZER WARNING] Gemini busy. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                raise
+def call_gemini(prompt: str) -> str:
+    """Calls Gemini Flash with a hard timeout and short logged backoff on free-tier 429/503."""
+    return generate_text(prompt, SYSTEM_PROMPT, temperature=0.2, tag="SYNTHESIZER")
 
 
 def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
@@ -204,6 +179,12 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
         f"LECTURE CONTEXT:\n\n{build_context_prompt(blocks)}\n\n"
         f"STUDENT QUESTION:\n{query}"
     )
+    if routed["intent"] == "overview":
+        prompt += (
+            f"\n\nNOTE: The student wants an overview. The {len(blocks)} blocks above are sampled evenly "
+            "across the whole lecture, in order. Summarize the lecture's main topics in the order they "
+            "are taught, citing each block's timestamp. Do not reply that it is not covered."
+        )
 
     print(
         f"[SYNTHESIZER] Generating answer with {CHAT_MODEL} from {len(blocks)} blocks..."

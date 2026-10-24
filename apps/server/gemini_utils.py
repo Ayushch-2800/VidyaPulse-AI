@@ -1,12 +1,15 @@
 """
-Shared Gemini free-tier helpers for the background engines (cheat sheet, study set).
+Shared Gemini free-tier helpers for /chat/ask and the background engines (cheat sheet, study set).
 
 Every call here has a hard timeout, logs its progress, retries 429/503 with a visible
-backoff, fails immediately on an invalid key, and is paced so back-to-back jobs stay
-under the free-tier requests-per-minute quota.
+backoff and fails immediately on an invalid key. Background jobs are also paced so
+back-to-back calls stay under the free-tier requests-per-minute quota.
 """
 
+import faulthandler
+import importlib
 import os
+import sys
 import time
 from pathlib import Path
 from typing import List, Type, TypeVar
@@ -16,6 +19,7 @@ from pydantic import BaseModel
 
 SERVER_DIR = Path(__file__).resolve().parent
 
+CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
 MAX_RETRIES = 5
 # 6s between generation calls is ~10 requests/minute, under the Flash free-tier RPM limit
@@ -23,6 +27,8 @@ MIN_SECONDS_BETWEEN_CALLS = float(os.getenv("GEMINI_MIN_SECONDS_BETWEEN_CALLS", 
 EMBED_BATCH_SIZE = 10
 SECONDS_BETWEEN_EMBED_BATCHES = 4
 EXPECTED_DIMENSIONS = 1536
+# If any startup step takes longer than this, print where it is stuck and exit
+STARTUP_TIMEOUT_SECONDS = int(os.getenv("STARTUP_TIMEOUT_SECONDS", "60"))
 REQUIRED_ENV_KEYS = (
     "NEXT_PUBLIC_SUPABASE_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
@@ -32,6 +38,7 @@ REQUIRED_ENV_KEYS = (
 T = TypeVar("T", bound=BaseModel)
 
 _last_generation_call = 0.0
+_client = None
 
 
 class GeminiKeyError(RuntimeError):
@@ -52,6 +59,33 @@ def check_environment(tag: str) -> None:
             f"Missing environment variables: {', '.join(missing)}. Add them to {env_path}."
         )
     log(tag, "Environment OK (Supabase URL, service-role key and Gemini key are set).")
+
+
+def preload(tag: str) -> None:
+    """
+    Imports the Supabase and Gemini modules one at a time with a log line per step, so a
+    stall shows exactly which step it is. A watchdog prints the stuck stack trace and exits
+    if any step takes longer than STARTUP_TIMEOUT_SECONDS.
+    """
+    steps = (
+        ("Creating Supabase client", "storage_utils"),
+        ("Loading the google-genai SDK", "google.genai"),
+        ("Loading the google-generativeai SDK", "google.generativeai"),
+        ("Configuring the embedding model", "embedding_engine"),
+    )
+    log(
+        tag,
+        f"Loading Supabase and Gemini. A step stuck for {STARTUP_TIMEOUT_SECONDS}s prints its stack trace and exits.",
+    )
+    for label, module in steps:
+        log(tag, f"{label}...")
+        started = time.monotonic()
+        faulthandler.dump_traceback_later(STARTUP_TIMEOUT_SECONDS, exit=True, file=sys.stderr)
+        try:
+            importlib.import_module(module)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+        log(tag, f"{label}: done in {time.monotonic() - started:.1f}s.")
 
 
 def is_invalid_key_error(error: Exception) -> bool:
@@ -91,19 +125,83 @@ def _pace(tag: str) -> None:
     _last_generation_call = time.monotonic()
 
 
-def _backoff_or_raise(tag: str, error: Exception, attempt: int) -> None:
+def _backoff_or_raise(
+    tag: str, error: Exception, attempt: int, max_retries: int = MAX_RETRIES
+) -> None:
     if is_invalid_key_error(error):
         raise GeminiKeyError(f"Gemini rejected GEMINI_API_KEY: {error}") from error
-    if not is_retryable_error(error) or attempt == MAX_RETRIES:
+    if not is_retryable_error(error) or attempt == max_retries:
         raise RuntimeError(
             f"Gemini call failed after {attempt} attempt(s): {error}"
         ) from error
     wait = SECONDS_BETWEEN_EMBED_BATCHES * 2**attempt
     log(
         tag,
-        f"Gemini rate limit or timeout ({str(error)[:80]}). Retry {attempt}/{MAX_RETRIES - 1} in {wait}s...",
+        f"Gemini rate limit or timeout ({str(error)[:80]}). Retry {attempt}/{max_retries - 1} in {wait}s...",
     )
     time.sleep(wait)
+
+
+def _get_client():
+    """One google-genai client for the process, with a hard per-request timeout."""
+    global _client
+    if _client is None:
+        from google import genai
+        from google.genai import types
+
+        _client = genai.Client(
+            http_options=types.HttpOptions(
+                timeout=REQUEST_TIMEOUT_SECONDS * 1000,  # milliseconds
+                # One attempt per call: retries happen below, where they are logged
+                retry_options=types.HttpRetryOptions(attempts=1),
+            )
+        )
+    return _client
+
+
+def _generate(
+    prompt: str,
+    config,
+    tag: str,
+    pace: bool,
+    max_retries: int,
+):
+    client = _get_client()
+    for attempt in range(1, max_retries + 1):
+        if pace:
+            _pace(tag)
+        started = time.monotonic()
+        log(
+            tag,
+            f"Calling {CHAT_MODEL} (attempt {attempt}, timeout {REQUEST_TIMEOUT_SECONDS}s)...",
+        )
+        try:
+            response = client.models.generate_content(
+                model=CHAT_MODEL, contents=prompt, config=config
+            )
+            log(tag, f"Gemini responded in {time.monotonic() - started:.1f}s.")
+            return response
+        except Exception as e:
+            _backoff_or_raise(tag, e, attempt, max_retries)
+    raise RuntimeError("Gemini returned no response.")
+
+
+def generate_text(
+    prompt: str,
+    system_instruction: str,
+    temperature: float,
+    tag: str,
+    pace: bool = False,
+    max_retries: int = 3,
+) -> str:
+    """Plain-text Gemini Flash call with a hard timeout and logged retries (used by /chat/ask)."""
+    from google.genai import types
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction, temperature=temperature
+    )
+    response = _generate(prompt, config, tag, pace, max_retries)
+    return (response.text or "").strip()
 
 
 def generate_structured(
@@ -114,44 +212,18 @@ def generate_structured(
     tag: str,
 ) -> T:
     """Calls Gemini Flash in JSON mode with a pydantic schema, with timeout, pacing and logged retries."""
-    from google import genai
     from google.genai import types
-    from synthesizer import CHAT_MODEL
 
-    client = genai.Client(
-        http_options=types.HttpOptions(
-            timeout=REQUEST_TIMEOUT_SECONDS * 1000,  # milliseconds
-            # One attempt per call: retries happen below, where they are logged
-            retry_options=types.HttpRetryOptions(attempts=1),
-        )
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        temperature=temperature,
+        response_mime_type="application/json",
+        response_schema=schema,
     )
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        _pace(tag)
-        started = time.monotonic()
-        log(
-            tag,
-            f"Calling {CHAT_MODEL} (attempt {attempt}, timeout {REQUEST_TIMEOUT_SECONDS}s)...",
-        )
-        try:
-            response = client.models.generate_content(
-                model=CHAT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=temperature,
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                ),
-            )
-            log(tag, f"Gemini responded in {time.monotonic() - started:.1f}s.")
-            if isinstance(response.parsed, schema):
-                return response.parsed
-            return schema.model_validate_json(response.text or "{}")
-        except Exception as e:
-            _backoff_or_raise(tag, e, attempt)
-
-    raise RuntimeError("Gemini returned no response.")
+    response = _generate(prompt, config, tag, pace=True, max_retries=MAX_RETRIES)
+    if isinstance(response.parsed, schema):
+        return response.parsed
+    return schema.model_validate_json(response.text or "{}")
 
 
 def embed_texts(texts: List[str], tag: str) -> List[List[float]]:

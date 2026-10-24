@@ -2,7 +2,7 @@ import sys
 
 if __name__ == "__main__":
     # Check keys before the imports below open Supabase and Gemini connections
-    from gemini_utils import check_environment
+    from gemini_utils import check_environment, preload
 
     print("[CHEATSHEET] Starting...", flush=True)
     try:
@@ -10,10 +10,8 @@ if __name__ == "__main__":
     except EnvironmentError as e:
         print(f"\n[CHEATSHEET ERROR] {e}", file=sys.stderr, flush=True)
         sys.exit(1)
-    print(
-        "[CHEATSHEET] Loading Supabase client and resolving Gemini models...",
-        flush=True,
-    )
+    # Imports Supabase and Gemini step by step, so a stall names the exact step
+    preload("CHEATSHEET")
 
 import json
 import math
