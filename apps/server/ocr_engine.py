@@ -3,7 +3,7 @@ import time
 from PIL import Image
 from typing import Dict, Any
 
-from gemini_utils import CHAT_MODEL, no_afc_config
+from gemini_utils import CHAT_MODEL, base_config_options
 
 
 # The client automatically picks up GEMINI_API_KEY from the environment
@@ -41,7 +41,7 @@ def extract_visual_data(image_path: str, timestamp: float) -> Dict[str, Any]:
             response = client.models.generate_content(
                 model=CHAT_MODEL,
                 contents=[prompt, img],
-                config={"automatic_function_calling": no_afc_config()},
+                config=base_config_options(),
             )
             extracted_text = response.text.strip()
             break  # Success, exit the retry loop

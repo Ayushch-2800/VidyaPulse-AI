@@ -19,6 +19,18 @@ export default function RootLayout({
         }}
       >
         {children}
+        <footer
+          style={{
+            padding: "16px 24px",
+            fontSize: "12px",
+            color: "#9CA3AF",
+            textAlign: "center",
+          }}
+        >
+          Build {process.env.NEXT_PUBLIC_BUILD_COMMIT} · served from{" "}
+          {process.env.NEXT_PUBLIC_BUILD_DIR} · started{" "}
+          {process.env.NEXT_PUBLIC_BUILD_TIME}
+        </footer>
       </body>
     </html>
   );
