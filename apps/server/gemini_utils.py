@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 SERVER_DIR = Path(__file__).resolve().parent
 
-CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
+CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
 MAX_RETRIES = 5
 # 6s between generation calls is ~10 requests/minute, under the Flash free-tier RPM limit
@@ -166,6 +166,17 @@ def _get_client():
     return _client
 
 
+def no_afc_config():
+    """
+    We never pass tools, but some google-genai versions still run their automatic
+    function calling path on every generate_content call and log a warning about it.
+    Disabling it sends the request straight to the model.
+    """
+    from google.genai import types
+
+    return types.AutomaticFunctionCallingConfig(disable=True)
+
+
 def _generate(
     prompt: str,
     config,
@@ -189,6 +200,12 @@ def _generate(
             log(tag, f"Gemini responded in {time.monotonic() - started:.1f}s.")
             return response
         except Exception as e:
+            # A retired or misspelled model name: retrying won't help, so say how to fix it
+            if "NOT_FOUND" in str(e) and "models/" in str(e):
+                raise RuntimeError(
+                    f"Gemini has no model named {CHAT_MODEL!r}. Set GEMINI_CHAT_MODEL in "
+                    f"{SERVER_DIR / '.env'} to a model your key can use. Gemini said: {e}"
+                ) from e
             _backoff_or_raise(tag, e, attempt, max_retries)
     raise RuntimeError("Gemini returned no response.")
 
@@ -205,7 +222,9 @@ def generate_text(
     from google.genai import types
 
     config = types.GenerateContentConfig(
-        system_instruction=system_instruction, temperature=temperature
+        system_instruction=system_instruction,
+        temperature=temperature,
+        automatic_function_calling=no_afc_config(),
     )
     response = _generate(prompt, config, tag, pace, max_retries)
     return (response.text or "").strip()
@@ -226,6 +245,7 @@ def generate_structured(
         temperature=temperature,
         response_mime_type="application/json",
         response_schema=schema,
+        automatic_function_calling=no_afc_config(),
     )
     response = _generate(prompt, config, tag, pace=True, max_retries=MAX_RETRIES)
     if isinstance(response.parsed, schema):
