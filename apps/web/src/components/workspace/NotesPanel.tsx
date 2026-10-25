@@ -215,54 +215,60 @@ export default function NotesPanel({
 
   return (
     <div>
-      <TranslationNote translation={translation} />
-      {drafting ? (
-        <div style={{ ...itemStyle, marginBottom: "12px" }}>
-          {draftAt !== null && (
-            <p style={{ margin: "0 0 8px", fontSize: "0.9em", ...mutedText }}>
-              Pinned to {formatTimestamp(draftAt)} in the lecture.
-            </p>
-          )}
-          <NoteEditor
-            initial={{ title: "", body: "" }}
-            saveLabel="Save note"
-            onSave={(title, body) =>
-              notes
-                .add({ kind: "note", title, body, timestamp_seconds: draftAt })
-                .then(() => setDrafting(false))
-            }
-            onCancel={() => setDrafting(false)}
-          />
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={startDraft}
-          style={{ ...primaryButton, marginBottom: "12px" }}
-        >
-          ＋ New note
-        </button>
-      )}
-
-      {notes.notes.length === 0 ? (
-        <p style={{ margin: 0, ...mutedText }}>
-          No notes yet. Use ☆ Save to notes on an answer, flashcard or formula,
-          or write your own.
-        </p>
-      ) : (
-        <div style={{ display: "grid", gap: "8px" }}>
-          {[...notes.notes].reverse().map((note) => (
-            <NoteCard
-              key={note.id}
-              note={note}
-              title={translation.t(note.title)}
-              body={translation.t(note.body)}
-              notes={notes}
-              onSeek={onSeek}
+      <TranslationNote translation={translation}>
+        {drafting ? (
+          <div style={{ ...itemStyle, marginBottom: "12px" }}>
+            {draftAt !== null && (
+              <p style={{ margin: "0 0 8px", fontSize: "0.9em", ...mutedText }}>
+                Pinned to {formatTimestamp(draftAt)} in the lecture.
+              </p>
+            )}
+            <NoteEditor
+              initial={{ title: "", body: "" }}
+              saveLabel="Save note"
+              onSave={(title, body) =>
+                notes
+                  .add({
+                    kind: "note",
+                    title,
+                    body,
+                    timestamp_seconds: draftAt,
+                  })
+                  .then(() => setDrafting(false))
+              }
+              onCancel={() => setDrafting(false)}
             />
-          ))}
-        </div>
-      )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={startDraft}
+            style={{ ...primaryButton, marginBottom: "12px" }}
+          >
+            ＋ New note
+          </button>
+        )}
+
+        {notes.notes.length === 0 ? (
+          <p style={{ margin: 0, ...mutedText }}>
+            No notes yet. Use ☆ Save to notes on an answer, flashcard or
+            formula, or write your own.
+          </p>
+        ) : (
+          <div style={{ display: "grid", gap: "8px" }}>
+            {[...notes.notes].reverse().map((note) => (
+              <NoteCard
+                key={note.id}
+                note={note}
+                title={translation.t(note.title)}
+                body={translation.t(note.body)}
+                notes={notes}
+                onSeek={onSeek}
+              />
+            ))}
+          </div>
+        )}
+      </TranslationNote>
     </div>
   );
 }

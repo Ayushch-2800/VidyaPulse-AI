@@ -65,7 +65,12 @@ from study_artifacts_engine import (
     lecture_owner_id,
     summary_running,
 )
-from translator import LANGUAGES, MAX_TEXTS_PER_REQUEST, translate_texts
+from translator import (
+    LANGUAGES,
+    MAX_TEXTS_PER_REQUEST,
+    TranslationQuotaError,
+    translate_texts,
+)
 from media_validator import (
     validate_and_save_upload,
     convert_to_mp3_if_needed,
@@ -679,6 +684,9 @@ def translate(payload: TranslateRequest):
         )
     try:
         translations = translate_texts(payload.texts, payload.language)
+    except TranslationQuotaError as e:
+        # The daily free-tier quota: the UI shows a short notice instead of an error
+        raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
     return {"language": payload.language, "translations": translations}

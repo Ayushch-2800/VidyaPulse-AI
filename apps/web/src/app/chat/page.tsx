@@ -17,6 +17,7 @@ import QuizPanel from "@/components/workspace/QuizPanel";
 import SaveNoteButton from "@/components/workspace/SaveNoteButton";
 import SummaryPanel from "@/components/workspace/SummaryPanel";
 import TranslationNote from "@/components/workspace/TranslationNote";
+import { useLectureStudyTexts } from "@/components/workspace/studyTexts";
 import { mutedText, panelStyle } from "@/components/workspace/styles";
 import Icon from "@/components/site/Icon";
 import { API_URL } from "@/lib/api";
@@ -27,7 +28,7 @@ import {
   useLanguagePreference,
   useTranslation,
 } from "@/lib/translate";
-import { useNotes, type NewNote } from "@/lib/workspace";
+import { friendlyError, useNotes, type NewNote } from "@/lib/workspace";
 import { readState, saveState, usePersistentState } from "@/lib/workspaceState";
 
 // Lecture IDs are Supabase UUIDs; only fetch a transcript once a full one is entered
@@ -159,11 +160,16 @@ const ChatTurns = memo(function ChatTurns({
               </p>
             ) : (
               <>
-                <CitedAnswer
-                  answer={translation.t(turn.answer)}
-                  citations={turn.citations}
-                  onSeek={onSeek}
-                />
+                {translation.ready(turn.answer) || translation.error ? (
+                  <CitedAnswer
+                    answer={translation.t(turn.answer)}
+                    citations={turn.citations}
+                    onSeek={onSeek}
+                  />
+                ) : (
+                  // Never English beside the chosen language: wait for this answer's translation
+                  <p style={{ margin: 0, ...mutedText }}>…</p>
+                )}
                 {turn.cached && (
                   <p
                     style={{
@@ -238,6 +244,20 @@ export default function ChatPage() {
     ? lectureId.trim()
     : null;
   const notes = useNotes(workspaceLecture);
+
+  // In another language, translate the whole lecture at once (summary, cheat sheet,
+  // flashcards, quiz, notes and answers) in one request, rather than one tab at a time
+  const translating = language !== "en";
+  const studyTexts = useLectureStudyTexts(workspaceLecture, translating);
+  useTranslation(
+    [
+      ...studyTexts,
+      ...notes.notes.flatMap((note) => [note.title, note.body]),
+      ...turns.map((turn) => turn.answer ?? ""),
+    ],
+    translating,
+    language,
+  );
 
   const seek = useCallback((seconds: number) => {
     player.current?.seek(seconds);
@@ -353,14 +373,19 @@ export default function ChatPage() {
         body: JSON.stringify({ query: question, lecture_id: lectureId.trim() }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "The request failed.");
+      if (!response.ok)
+        throw new Error(
+          friendlyError(data.detail || "The request failed.", response.status),
+        );
       finish({
         answer: data.answer,
         citations: data.citations,
         cached: data.cached === true,
       });
     } catch (err) {
-      finish({ error: err instanceof Error ? err.message : String(err) });
+      finish({
+        error: friendlyError(err instanceof Error ? err.message : String(err)),
+      });
     }
   };
 

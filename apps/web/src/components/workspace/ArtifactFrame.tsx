@@ -2,6 +2,7 @@
 
 import {
   STALL_MINUTES,
+  friendlyError,
   formatTimestamp,
   useElapsedSeconds,
   type Artifact,
@@ -105,7 +106,8 @@ export default function ArtifactFrame<T>({
     return (
       <div>
         <p style={{ marginTop: 0, ...errorText }}>
-          Generating the {name} failed: {row.error || error || "unknown error"}
+          Generating the {name} failed.{" "}
+          {friendlyError(row.error || error || "Unknown error.")}
         </p>
         <button type="button" onClick={generate} style={primaryButton}>
           Try again

@@ -12,6 +12,7 @@ import { usePersistentState } from "@/lib/workspaceState";
 import ArtifactFrame from "./ArtifactFrame";
 import InlineMath from "./InlineMath";
 import TranslationNote from "./TranslationNote";
+import { quizTexts } from "./studyTexts";
 import { itemStyle, mutedText, secondaryButton } from "./styles";
 
 export const OPTION_LETTERS = ["A", "B", "C", "D"];
@@ -52,14 +53,7 @@ export default function QuizPanel({
   const artifact = useArtifact<QuizQuestion[]>(lectureId, "quiz", active);
   const questions =
     artifact.row?.status === "completed" ? artifact.row.content : [];
-  const translation = useTranslation(
-    questions.flatMap((q) => [
-      q.question,
-      ...q.options,
-      ...q.option_explanations,
-    ]),
-    active,
-  );
+  const translation = useTranslation(quizTexts(questions), active);
   const { t } = translation;
   // The option index the student chose for each question, keyed by question position. Kept
   // for this version of the quiz when the student leaves the workspace and comes back.
@@ -88,118 +82,123 @@ export default function QuizPanel({
           </p>
         ) : (
           <>
-            <TranslationNote translation={translation} />
-            <div style={{ display: "grid", gap: "12px" }}>
-              {questions.map((q, qi) => {
-                const answered = qi in chosen;
-                return (
-                  <div key={qi} style={itemStyle}>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "baseline",
-                        gap: "8px",
-                      }}
-                    >
-                      <p style={{ margin: 0, fontWeight: 600 }}>
-                        {qi + 1}. <InlineMath text={t(q.question)} />
-                      </p>
-                      {q.timestamp_seconds !== null && (
-                        <SeekButton
-                          label={formatTimestamp(q.timestamp_seconds)}
-                          seconds={q.timestamp_seconds}
-                          onSeek={onSeek}
-                        />
-                      )}
-                    </div>
-                    <div
-                      style={{ display: "grid", gap: "6px", marginTop: "8px" }}
-                    >
-                      {q.options.map((option, oi) => (
-                        <button
-                          key={oi}
-                          type="button"
-                          className="vp-quiz-option"
-                          disabled={answered}
-                          onClick={() =>
-                            setChosen((prev) => ({ ...prev, [qi]: oi }))
-                          }
-                          style={{
-                            display: "flex",
-                            gap: "8px",
-                            textAlign: "left",
-                            padding: "10px 12px",
-                            border: "1px solid",
-                            borderRadius: "10px",
-                            color: "var(--vp-text)",
-                            font: "inherit",
-                            cursor: answered ? "default" : "pointer",
-                            ...optionColors(
-                              chosen[qi] === oi,
-                              oi === q.correct_index,
-                              answered,
-                            ),
-                          }}
-                        >
-                          <strong>{OPTION_LETTERS[oi]}.</strong>
-                          <InlineMath text={t(option)} />
-                        </button>
-                      ))}
-                    </div>
-                    {answered && (
-                      <div style={{ marginTop: "10px", fontSize: "0.92em" }}>
-                        <p style={{ margin: "0 0 6px", fontWeight: 600 }}>
-                          {chosen[qi] === q.correct_index
-                            ? "✓ Correct."
-                            : `✗ Not quite. The answer is ${OPTION_LETTERS[q.correct_index]}.`}
+            <TranslationNote translation={translation}>
+              <div style={{ display: "grid", gap: "12px" }}>
+                {questions.map((q, qi) => {
+                  const answered = qi in chosen;
+                  return (
+                    <div key={qi} style={itemStyle}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "baseline",
+                          gap: "8px",
+                        }}
+                      >
+                        <p style={{ margin: 0, fontWeight: 600 }}>
+                          {qi + 1}. <InlineMath text={t(q.question)} />
                         </p>
-                        {q.option_explanations.map((why, oi) => (
-                          <div
+                        {q.timestamp_seconds !== null && (
+                          <SeekButton
+                            label={formatTimestamp(q.timestamp_seconds)}
+                            seconds={q.timestamp_seconds}
+                            onSeek={onSeek}
+                          />
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gap: "6px",
+                          marginTop: "8px",
+                        }}
+                      >
+                        {q.options.map((option, oi) => (
+                          <button
                             key={oi}
+                            type="button"
+                            className="vp-quiz-option"
+                            disabled={answered}
+                            onClick={() =>
+                              setChosen((prev) => ({ ...prev, [qi]: oi }))
+                            }
                             style={{
                               display: "flex",
-                              gap: "6px",
-                              marginBottom: "4px",
-                              color:
-                                oi === q.correct_index
-                                  ? "var(--vp-success)"
-                                  : "var(--vp-text-2)",
+                              gap: "8px",
+                              textAlign: "left",
+                              padding: "10px 12px",
+                              border: "1px solid",
+                              borderRadius: "10px",
+                              color: "var(--vp-text)",
+                              font: "inherit",
+                              cursor: answered ? "default" : "pointer",
+                              ...optionColors(
+                                chosen[qi] === oi,
+                                oi === q.correct_index,
+                                answered,
+                              ),
                             }}
                           >
-                            <strong>{OPTION_LETTERS[oi]}:</strong>
-                            <CitedAnswer answer={t(why)} onSeek={onSeek} />
-                          </div>
+                            <strong>{OPTION_LETTERS[oi]}.</strong>
+                            <InlineMath text={t(option)} />
+                          </button>
                         ))}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                marginTop: "12px",
-              }}
-            >
-              <strong>
-                Score: {score} / {questions.length}
-                {answeredCount < questions.length &&
-                  ` (${questions.length - answeredCount} left)`}
-              </strong>
-              {answeredCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setChosen({})}
-                  style={secondaryButton}
-                >
-                  Retake quiz
-                </button>
-              )}
-            </div>
+                      {answered && (
+                        <div style={{ marginTop: "10px", fontSize: "0.92em" }}>
+                          <p style={{ margin: "0 0 6px", fontWeight: 600 }}>
+                            {chosen[qi] === q.correct_index
+                              ? "✓ Correct."
+                              : `✗ Not quite. The answer is ${OPTION_LETTERS[q.correct_index]}.`}
+                          </p>
+                          {q.option_explanations.map((why, oi) => (
+                            <div
+                              key={oi}
+                              style={{
+                                display: "flex",
+                                gap: "6px",
+                                marginBottom: "4px",
+                                color:
+                                  oi === q.correct_index
+                                    ? "var(--vp-success)"
+                                    : "var(--vp-text-2)",
+                              }}
+                            >
+                              <strong>{OPTION_LETTERS[oi]}:</strong>
+                              <CitedAnswer answer={t(why)} onSeek={onSeek} />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "12px",
+                  marginTop: "12px",
+                }}
+              >
+                <strong>
+                  Score: {score} / {questions.length}
+                  {answeredCount < questions.length &&
+                    ` (${questions.length - answeredCount} left)`}
+                </strong>
+                {answeredCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setChosen({})}
+                    style={secondaryButton}
+                  >
+                    Retake quiz
+                  </button>
+                )}
+              </div>
+            </TranslationNote>
           </>
         )
       }
