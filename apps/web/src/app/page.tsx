@@ -4,8 +4,8 @@ const pages = [
   { href: "/login", label: "Log in", note: "Sign up or log in with Supabase" },
   {
     href: "/chat",
-    label: "Ask a lecture",
-    note: "Chat with a lecture and jump to cited timestamps",
+    label: "Lecture workspace",
+    note: "Ask, summarize, revise with flashcards and quizzes, take notes and export a PDF",
   },
   {
     href: "/ingest",

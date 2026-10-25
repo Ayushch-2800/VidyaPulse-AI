@@ -24,3 +24,27 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Tailwind's reset removes list bullets and paragraph spacing; answers rendered from
+   markdown (chat, summary, notes, PDF export) need them back */
+.cited-answer p + p,
+.cited-answer p + ul,
+.cited-answer p + ol,
+.cited-answer ul + p,
+.cited-answer ol + p {
+  margin-top: 0.6em;
+}
+
+.cited-answer ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+
+.cited-answer ol {
+  list-style: decimal;
+  padding-left: 1.4em;
+}
+
+.cited-answer li + li {
+  margin-top: 0.25em;
+}

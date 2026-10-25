@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from storage_utils import supabase
 from gemini_utils import GeminiKeyError, generate_structured, log
-from synthesizer import CHAT_MODEL
+from synthesizer import CHAT_MODEL, synthesize_answer
 from cheat_sheet_engine import (
     fetch_lecture_chunks,
     build_batch_prompt,
@@ -28,11 +28,14 @@ from cheat_sheet_engine import (
 )
 
 TAG = "STUDY SET"
+SUMMARY_TAG = "SUMMARY"
 FLASHCARD_COUNT = 10
 QUIZ_QUESTION_COUNT = 5
 OPTIONS_PER_QUESTION = 4
 # Flashcards and quiz come from ONE Gemini call; longer lectures are sampled evenly to fit this budget
 MAX_CONTEXT_CHARS = 60000
+# Phrased so the query router takes its overview route, which samples the whole lecture in order
+SUMMARY_QUERY = "Give me a summary of this lecture, covering its main topics in the order they are taught."
 
 
 class Flashcard(BaseModel):
@@ -144,6 +147,22 @@ def clean_quiz(
     return cleaned[:QUIZ_QUESTION_COUNT]
 
 
+def lecture_owner_id(lecture_id: str) -> str:
+    """The lecture's user_id. Raises ValueError if there is no such lecture."""
+    try:
+        lecture = (
+            supabase.table("lectures").select("user_id").eq("id", lecture_id).execute()
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Supabase query on lectures failed ({e}). Check NEXT_PUBLIC_SUPABASE_URL and "
+            "SUPABASE_SERVICE_ROLE_KEY, and that lecture_id is a valid uuid."
+        ) from e
+    if not lecture.data:
+        raise ValueError(f"Lecture {lecture_id} not found in the lectures table.")
+    return lecture.data[0]["user_id"]
+
+
 def save_study_artifact(
     lecture_id: str, user_id: str, kind: str, **fields: Any
 ) -> None:
@@ -169,21 +188,7 @@ def generate_study_set(lecture_id: str) -> Dict[str, Any]:
 
     try:
         log(TAG, "Looking up the lecture in Supabase...")
-        try:
-            lecture = (
-                supabase.table("lectures")
-                .select("user_id")
-                .eq("id", lecture_id)
-                .execute()
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Supabase query on lectures failed ({e}). Check NEXT_PUBLIC_SUPABASE_URL and "
-                "SUPABASE_SERVICE_ROLE_KEY, and that lecture_id is a valid uuid."
-            ) from e
-        if not lecture.data:
-            raise ValueError(f"Lecture {lecture_id} not found in the lectures table.")
-        user_id = lecture.data[0]["user_id"]
+        user_id = lecture_owner_id(lecture_id)
 
         for kind in ("flashcards", "quiz"):
             save_study_artifact(
@@ -243,6 +248,69 @@ def generate_study_set(lecture_id: str) -> Dict[str, Any]:
             except Exception as save_error:
                 print(
                     f"[STUDY SET ERROR] Could not record the failure in Supabase: {save_error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        return {"status": "failed", "error": str(e)}
+
+
+def generate_summary(lecture_id: str) -> Dict[str, Any]:
+    """
+    Task 18: Writes the lecture summary with the same grounded, [MM:SS]-cited synthesizer as
+    /chat/ask and saves it to study_artifacts, so the workspace and the PDF export show it
+    without another Gemini call.
+    """
+    log(SUMMARY_TAG, f"--- GENERATING SUMMARY FOR LECTURE {lecture_id} ---")
+    user_id = None
+
+    try:
+        log(SUMMARY_TAG, "Looking up the lecture in Supabase...")
+        user_id = lecture_owner_id(lecture_id)
+        try:
+            save_study_artifact(
+                lecture_id,
+                user_id,
+                "summary",
+                status="processing",
+                error=None,
+                model=CHAT_MODEL,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Supabase write to study_artifacts failed ({e}). Run "
+                "migrations/006_workspace.sql, which allows the 'summary' kind."
+            ) from e
+
+        result = synthesize_answer(SUMMARY_QUERY, lecture_id)
+        if not result["grounded"]:
+            raise ValueError(
+                "Gemini could not summarize this lecture. Check that ingestion completed "
+                "and the lecture's chunks are indexed."
+            )
+
+        content = {"answer": result["answer"], "citations": result["citations"]}
+        log(SUMMARY_TAG, "Saving the summary to Supabase...")
+        save_study_artifact(
+            lecture_id, user_id, "summary", status="completed", content=content
+        )
+        log(
+            SUMMARY_TAG,
+            f"--- SUMMARY COMPLETE: {len(content['answer']):,} chars, "
+            f"{len(content['citations'])} timestamp citations ---",
+        )
+        return {"status": "completed", **content}
+
+    except Exception as e:
+        kind_label = "INVALID GEMINI KEY" if isinstance(e, GeminiKeyError) else "ERROR"
+        print(f"\n[SUMMARY {kind_label}] {e}", file=sys.stderr, flush=True)
+        if user_id:
+            try:
+                save_study_artifact(
+                    lecture_id, user_id, "summary", status="failed", error=str(e)
+                )
+            except Exception as save_error:
+                print(
+                    f"[SUMMARY ERROR] Could not record the failure in Supabase: {save_error}",
                     file=sys.stderr,
                     flush=True,
                 )

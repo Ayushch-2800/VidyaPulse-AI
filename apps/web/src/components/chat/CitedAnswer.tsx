@@ -27,15 +27,28 @@ const seekButtonStyle: React.CSSProperties = {
   verticalAlign: "baseline",
 };
 
-function SeekButton({
+export function SeekButton({
   label,
   seconds,
   onSeek,
+  seekUrl,
 }: {
   label: string;
   seconds: number;
-  onSeek: (seconds: number) => void;
+  onSeek?: (seconds: number) => void;
+  seekUrl?: (seconds: number) => string | null;
 }) {
+  // Without a player (the PDF export), a citation is a link to that moment, or plain text
+  if (!onSeek) {
+    const href = seekUrl?.(seconds);
+    return href ? (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        [{label}]
+      </a>
+    ) : (
+      <span>[{label}]</span>
+    );
+  }
   return (
     <button
       type="button"
@@ -51,16 +64,19 @@ function SeekButton({
 
 /**
  * Renders a synthesizer answer as markdown with KaTeX math, turning every [MM:SS]
- * citation into a button that calls onSeek(seconds) on the lecture player.
+ * citation into a button that calls onSeek(seconds) on the lecture player, or into a
+ * seekUrl(seconds) link when there is no player.
  */
 export default function CitedAnswer({
   answer,
   citations = [],
   onSeek,
+  seekUrl,
 }: {
   answer: string;
   citations?: Citation[];
-  onSeek: (seconds: number) => void;
+  onSeek?: (seconds: number) => void;
+  seekUrl?: (seconds: number) => string | null;
 }) {
   if (answer.trim() === NOT_COVERED) {
     return (
@@ -79,6 +95,7 @@ export default function CitedAnswer({
             label={String(children)}
             seconds={seconds}
             onSeek={onSeek}
+            seekUrl={seekUrl}
           />
         );
       }
@@ -91,7 +108,7 @@ export default function CitedAnswer({
   };
 
   return (
-    <div style={{ lineHeight: 1.6 }}>
+    <div className="cited-answer" style={{ lineHeight: 1.6 }}>
       <ReactMarkdown
         remarkPlugins={[remarkMath]}
         rehypePlugins={[rehypeKatex]}
@@ -121,6 +138,7 @@ export default function CitedAnswer({
                 label={c.label}
                 seconds={c.seconds}
                 onSeek={onSeek}
+                seekUrl={seekUrl}
               />
             ))}
         </div>

@@ -31,6 +31,8 @@ _slow_import_timer.daemon = True
 _slow_import_timer.start()
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import List, Optional
 
 import uuid
 import uvicorn
@@ -43,6 +45,7 @@ from fastapi import (
     File,
     UploadFile,
     BackgroundTasks,
+    Response,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -55,7 +58,12 @@ from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 from synthesizer import synthesize_answer
 from cheat_sheet_engine import generate_cheat_sheet
-from study_artifacts_engine import generate_study_set
+from study_artifacts_engine import (
+    generate_study_set,
+    generate_summary,
+    lecture_owner_id,
+)
+from translator import LANGUAGES, MAX_TEXTS_PER_REQUEST, translate_texts
 from media_validator import (
     validate_and_save_upload,
     convert_to_mp3_if_needed,
@@ -128,6 +136,29 @@ class IngestYouTubeRequest(BaseModel):
 
 class FinalizeStreamRequest(BaseModel):
     session_id: str
+
+
+class TranslateRequest(BaseModel):
+    texts: List[str]
+    language: str
+
+
+NOTE_KINDS = ("note", "answer", "flashcard", "formula")
+NOTE_COLUMNS = (
+    "id, lecture_id, kind, title, body, timestamp_seconds, created_at, updated_at"
+)
+
+
+class NoteCreateRequest(BaseModel):
+    kind: str = "note"
+    title: str = ""
+    body: str = ""
+    timestamp_seconds: Optional[float] = None
+
+
+class NoteUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    body: Optional[str] = None
 
 
 @app.get("/")
@@ -324,6 +355,8 @@ async def ingest_video_pipeline(
         background_tasks.add_task(generate_cheat_sheet, lecture_id)
         # TASK 16: Flashcards + quiz, queued after the cheat sheet so the two Gemini jobs run one at a time
         background_tasks.add_task(generate_study_set, lecture_id)
+        # TASK 18: The workspace summary, one more Gemini call after the study set
+        background_tasks.add_task(generate_summary, lecture_id)
 
         return {
             "status": "success",
@@ -519,17 +552,32 @@ def chat_ask(payload: ChatAskRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def migration_hint(error: Exception, migration: str) -> str:
+    """The Supabase error, plus which migration to run when it is a missing table or kind."""
+    text = str(error)
+    if any(s in text for s in ("PGRST205", "does not exist", "_check")):
+        return (
+            f"{text} Run apps/server/migrations/{migration} in the Supabase SQL editor."
+        )
+    return text
+
+
 @app.get("/lectures/{lecture_id}/cheatsheet")
 def get_cheat_sheet(lecture_id: str):
     """
     Task 15: Returns the stored cheat sheet and its generation status.
     """
-    res = (
-        supabase.table("cheat_sheets")
-        .select("lecture_id, status, content, topic_tags, model, error, updated_at")
-        .eq("lecture_id", lecture_id)
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("cheat_sheets")
+            .select("lecture_id, status, content, topic_tags, model, error, updated_at")
+            .eq("lecture_id", lecture_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=migration_hint(e, "004_cheat_sheets.sql")
+        )
     if not res.data:
         raise HTTPException(
             status_code=404, detail="No cheat sheet for this lecture yet."
@@ -549,14 +597,20 @@ def regenerate_cheat_sheet(lecture_id: str, background_tasks: BackgroundTasks):
 @app.get("/lectures/{lecture_id}/study-artifacts")
 def get_study_artifacts(lecture_id: str):
     """
-    Task 16: Returns the lecture's flashcards and quiz, keyed by kind, with their status.
+    Task 16: Returns the lecture's flashcards and quiz (and, since Task 18, its summary),
+    keyed by kind, with their status.
     """
-    res = (
-        supabase.table("study_artifacts")
-        .select("kind, status, content, model, error, updated_at")
-        .eq("lecture_id", lecture_id)
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("study_artifacts")
+            .select("kind, status, content, model, error, updated_at")
+            .eq("lecture_id", lecture_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=migration_hint(e, "005_study_artifacts.sql")
+        )
     if not res.data:
         raise HTTPException(
             status_code=404, detail="No study artifacts for this lecture yet."
@@ -573,6 +627,207 @@ def regenerate_study_artifacts(lecture_id: str, background_tasks: BackgroundTask
     """
     background_tasks.add_task(generate_study_set, lecture_id)
     return {"status": "queued", "lecture_id": lecture_id}
+
+
+@app.post("/lectures/{lecture_id}/summary")
+def regenerate_summary(lecture_id: str):
+    """
+    Task 18: Writes (or rewrites) the lecture summary and returns it. One Gemini call, so it
+    answers in the request like /chat/ask; a sync route keeps it in FastAPI's threadpool.
+    """
+    result = generate_summary(lecture_id)
+    if result["status"] != "completed":
+        raise HTTPException(status_code=500, detail=result["error"])
+    return result
+
+
+@app.post("/translate")
+def translate(payload: TranslateRequest):
+    """
+    Task 18: Translates workspace text (answers, summary, cheat sheet, flashcards, quiz and
+    notes) for the language switch. Results are cached, so a repeat costs no Gemini call.
+    """
+    if payload.language not in LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported language {payload.language!r}. Choose one of: {', '.join(LANGUAGES)}.",
+        )
+    if len(payload.texts) > MAX_TEXTS_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Send at most {MAX_TEXTS_PER_REQUEST} texts per request.",
+        )
+    try:
+        translations = translate_texts(payload.texts, payload.language)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
+    return {"language": payload.language, "translations": translations}
+
+
+@app.get("/lectures/{lecture_id}/notes")
+def list_notes(lecture_id: str):
+    """
+    Task 18: The student's notes for a lecture, oldest first.
+    """
+    try:
+        res = (
+            supabase.table("notes")
+            .select(NOTE_COLUMNS)
+            .eq("lecture_id", lecture_id)
+            .order("created_at")
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=migration_hint(e, "006_workspace.sql")
+        )
+    return {"notes": res.data or []}
+
+
+@app.post("/lectures/{lecture_id}/notes", status_code=status.HTTP_201_CREATED)
+def create_note(lecture_id: str, payload: NoteCreateRequest):
+    """
+    Task 18: Saves a note: an AI answer, a flashcard, a formula, or the student's own text.
+    Owned by the lecture's user, like the cheat sheet and study sets.
+    """
+    if payload.kind not in NOTE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"kind must be one of: {', '.join(NOTE_KINDS)}.",
+        )
+    if not payload.title.strip() and not payload.body.strip():
+        raise HTTPException(
+            status_code=400, detail="A note needs a title or some text."
+        )
+    try:
+        user_id = lecture_owner_id(lecture_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        res = (
+            supabase.table("notes")
+            .insert(
+                {
+                    "lecture_id": lecture_id,
+                    "user_id": user_id,
+                    "kind": payload.kind,
+                    "title": payload.title.strip(),
+                    "body": payload.body.strip(),
+                    "timestamp_seconds": payload.timestamp_seconds,
+                }
+            )
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=migration_hint(e, "006_workspace.sql")
+        )
+    return res.data[0]
+
+
+@app.patch("/notes/{note_id}")
+def update_note(note_id: str, payload: NoteUpdateRequest):
+    """
+    Task 18: Edits a note's title or text.
+    """
+    changes = {k: v.strip() for k, v in payload.model_dump(exclude_none=True).items()}
+    if not changes:
+        raise HTTPException(status_code=400, detail="Send a title or body to change.")
+    changes["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        res = supabase.table("notes").update(changes).eq("id", note_id).execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=migration_hint(e, "006_workspace.sql")
+        )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    return res.data[0]
+
+
+@app.delete("/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(note_id: str):
+    """
+    Task 18: Deletes a note.
+    """
+    try:
+        res = supabase.table("notes").delete().eq("id", note_id).execute()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=migration_hint(e, "006_workspace.sql")
+        )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Note not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/lectures/{lecture_id}/export")
+def get_export_bundle(lecture_id: str):
+    """
+    Task 18: Everything the PDF export page prints, in one request: the lecture, its summary,
+    cheat sheet, flashcards, quiz and notes. A part that is missing or fails to load is null,
+    with the reason in "warnings".
+    """
+    try:
+        lecture = (
+            supabase.table("lectures")
+            .select("id, title, source_type, source_url")
+            .eq("id", lecture_id)
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not lecture.data:
+        raise HTTPException(status_code=404, detail="Lecture not found.")
+
+    warnings: List[str] = []
+
+    def load(label: str, migration: str, query):
+        try:
+            return query().data or []
+        except Exception as e:
+            warnings.append(f"Could not load {label}: {migration_hint(e, migration)}")
+            return []
+
+    sheets = load(
+        "the cheat sheet",
+        "004_cheat_sheets.sql",
+        lambda: supabase.table("cheat_sheets")
+        .select("status, content, topic_tags, updated_at")
+        .eq("lecture_id", lecture_id)
+        .execute(),
+    )
+    artifacts = load(
+        "the summary and study sets",
+        "005_study_artifacts.sql",
+        lambda: supabase.table("study_artifacts")
+        .select("kind, status, content, updated_at")
+        .eq("lecture_id", lecture_id)
+        .execute(),
+    )
+    notes = load(
+        "notes",
+        "006_workspace.sql",
+        lambda: supabase.table("notes")
+        .select(NOTE_COLUMNS)
+        .eq("lecture_id", lecture_id)
+        .order("created_at")
+        .execute(),
+    )
+    by_kind = {row["kind"]: row for row in artifacts}
+
+    return {
+        "lecture": lecture.data[0],
+        "summary": by_kind.get("summary"),
+        "cheat_sheet": sheets[0] if sheets else None,
+        "flashcards": by_kind.get("flashcards"),
+        "quiz": by_kind.get("quiz"),
+        "notes": notes,
+        "warnings": warnings,
+    }
 
 
 # PostgREST caps each response at 1000 rows, so long lectures are read page by page
