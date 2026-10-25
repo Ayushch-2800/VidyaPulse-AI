@@ -53,10 +53,11 @@ from pydantic import BaseModel
 from temporal_chunker import align_multimodal_chunks
 from embedding_engine import index_multimodal_chunks
 
+import cache
 from auth import get_current_user
 from storage_utils import supabase
 from query_router import classify_intent, hybrid_intelligent_router
-from synthesizer import synthesize_answer
+from synthesizer import remember_chunk_times, synthesize_answer
 from cheat_sheet_engine import generate_cheat_sheet
 from study_artifacts_engine import (
     cached_summary,
@@ -173,6 +174,35 @@ def db_check():
     return {"status": "ok"}
 
 
+@app.get("/cache/stats")
+def cache_stats():
+    """Task 19: Which cache is in use (redis or memory) and its hit rate since startup."""
+    return cache.stats()
+
+
+# Rows per Supabase insert, so a 4-hour lecture's thousands of Whisper segments are not one huge request
+SEGMENT_INSERT_BATCH_SIZE = 500
+
+
+def insert_in_batches(table: str, rows: List[dict], batch_size: int) -> None:
+    for start in range(0, len(rows), batch_size):
+        supabase.table(table).insert(rows[start : start + batch_size]).execute()
+
+
+def transcribe_or_raise(file_path: str) -> dict:
+    """Local Whisper ASR. Raises when it failed, so the lecture is marked failed, not empty."""
+    from asr_engine import transcribe_multilingual_audio
+
+    asr_result = transcribe_multilingual_audio(
+        file_path=file_path,
+        language_code="unknown",  # Auto-detects hi-IN, ta-IN, te-IN, kn-IN, mr-IN, etc.
+        mode="codemix",  # Ideal for Hinglish, Tanglish, and technical code-switching
+    )
+    if asr_result.get("error"):
+        raise RuntimeError(f"Transcription failed: {asr_result['error']}")
+    return asr_result
+
+
 def process_ingestion_pipeline(
     lecture_id: str,
     local_audio_path: str,
@@ -184,7 +214,6 @@ def process_ingestion_pipeline(
     asynchronously for background file processing.
     """
     # Heavy libraries (faster-whisper, OpenCV) load on the first ingestion, not at server boot
-    from asr_engine import transcribe_multilingual_audio
     from vision_extractor import process_video_keyframes
 
     try:
@@ -201,11 +230,7 @@ def process_ingestion_pipeline(
                 )
 
         # 1. Pan-India Multilingual ASR with Auto Language Detection & Code-Mixing
-        asr_result = transcribe_multilingual_audio(
-            file_path=local_audio_path,
-            language_code="unknown",  # Auto-detects hi-IN, ta-IN, te-IN, kn-IN, mr-IN, etc.
-            mode="codemix",  # Ideal for Hinglish, Tanglish, and technical code-switching
-        )
+        asr_result = transcribe_or_raise(local_audio_path)
 
         detected_lang = asr_result["detected_language"]
         segments = asr_result["segments"]
@@ -224,8 +249,7 @@ def process_ingestion_pipeline(
                 }
             )
 
-        if db_chunks:
-            supabase.table("transcript_chunks").insert(db_chunks).execute()
+        insert_in_batches("transcript_chunks", db_chunks, SEGMENT_INSERT_BATCH_SIZE)
 
         # 4. Mark lecture as completed with detected language
         supabase.table("lectures").update(
@@ -255,12 +279,13 @@ def process_ingestion_pipeline(
                 pass
 
 
+# A plain def, not async: FastAPI runs it in its threadpool, so a long lecture being
+# transcribed doesn't freeze /chat/ask and every other request until it finishes
 @app.post("/ingest/youtube")
-async def ingest_video_pipeline(
+def ingest_video_pipeline(
     payload: IngestYouTubeRequest, background_tasks: BackgroundTasks
 ):
     import yt_dlp
-    from asr_engine import transcribe_multilingual_audio
     from vision_extractor import process_video_keyframes
 
     youtube_url = payload.youtube_url
@@ -310,9 +335,7 @@ async def ingest_video_pipeline(
         # TASK 9: Audio Transcription (Local Whisper)
         # ==========================================
         print("[1/4] Running Audio Transcription...")
-        asr_result = transcribe_multilingual_audio(
-            file_path=video_path, language_code="unknown", mode="codemix"
-        )
+        asr_result = transcribe_or_raise(video_path)
         transcript_segments = asr_result["segments"]
         detected_lang = asr_result["detected_language"]
 
@@ -343,8 +366,16 @@ async def ingest_video_pipeline(
         # ==========================================
         # TASK 12: Multilingual Vector Embedding
         # ==========================================
+        if not multimodal_chunks:
+            raise RuntimeError(
+                "No speech or slide text was found in this video, so there is nothing to index."
+            )
+
         print("[4/4] Generating Embeddings and Storing in Database...")
-        index_multimodal_chunks(chunks=multimodal_chunks, lecture_id=lecture_id)
+        if not index_multimodal_chunks(chunks=multimodal_chunks, lecture_id=lecture_id):
+            raise RuntimeError(
+                "Embedding or saving the lecture's chunks failed; see the [EMBEDDING] lines above."
+            )
 
         # Mark the lecture as successfully completed
         supabase.table("lectures").update(
@@ -387,7 +418,7 @@ async def ingest_video_pipeline(
 
 
 @app.post("/ingest/upload")
-async def ingest_uploaded_lecture(
+def ingest_uploaded_lecture(
     background_tasks: BackgroundTasks, file: UploadFile = File(...)
 ):
     """
@@ -531,7 +562,7 @@ async def finalize_stream(payload: FinalizeStreamRequest):
 
 
 @app.post("/test/router")
-async def test_query_router(payload: RouterTestRequest):
+def test_query_router(payload: RouterTestRequest):
     """
     Test endpoint for Task 13: Hybrid Intelligent Query Router.
     """
@@ -881,11 +912,13 @@ def get_transcript(lecture_id: str):
     """
     chunks = fetch_all_rows(
         "multimodal_chunks",
-        "chunk_index, start_time_seconds, end_time_seconds, transcript_text",
+        "id, chunk_index, start_time_seconds, end_time_seconds, transcript_text",
         lecture_id,
         "chunk_index",
     )
     if chunks:
+        # Opening the lecture warms the chunk time map, so the first answer cites without a lookup
+        remember_chunk_times(lecture_id, chunks)
         segments = [
             {
                 "start": c["start_time_seconds"],

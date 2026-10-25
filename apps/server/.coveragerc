@@ -1,0 +1,18 @@
+[run]
+source = .
+omit =
+    tests/*
+    venv/*
+    # Not imported by the app: the Sarvam client (replaced by local faster-whisper), the old
+    # yt-dlp audio helper and an unused SQLAlchemy engine
+    transcriber.py
+    audio_extractor.py
+    database.py
+
+[report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

@@ -1,5 +1,8 @@
 import re
+import time
 from typing import List, Dict, Any, Optional, Tuple
+
+import cache
 
 # CHAT_MODEL is the free-tier Gemini Flash model (GEMINI_CHAT_MODEL env), re-exported for the engines
 from gemini_utils import (
@@ -48,30 +51,94 @@ def format_timestamp(seconds: float) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
-def hydrate_timestamps(context_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def chunk_time_entries(rows: List[Dict[str, Any]]) -> Dict[str, list]:
+    """chunk id -> [chunk_index, start, end], the compact form the cache stores."""
+    return {
+        str(row["id"]): [
+            row.get("chunk_index"),
+            row.get("start_time_seconds"),
+            row.get("end_time_seconds"),
+        ]
+        for row in rows
+        if row.get("id") is not None
+    }
+
+
+def remember_chunk_times(lecture_id: str, rows: List[Dict[str, Any]]) -> None:
+    """Caches a lecture's chunk time ranges, so citing its answers needs no lookup."""
+    times = chunk_time_entries(rows)
+    if times:
+        cache.set_json(
+            cache.lecture_key("chunk-times", lecture_id),
+            times,
+            cache.SEARCH_TTL_SECONDS,
+        )
+
+
+def lecture_chunk_times(lecture_id: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Task 19: Every chunk's time range for one lecture, read once and then served from the cache.
+    A few small columns per chunk, so even a 4-hour lecture is one quick query.
+    """
+    key = cache.lecture_key("chunk-times", lecture_id)
+    times = cache.get_json(key)
+    if times is None:
+        res = (
+            supabase.table("multimodal_chunks")
+            .select("id, chunk_index, start_time_seconds, end_time_seconds")
+            .eq("lecture_id", lecture_id)
+            .order("chunk_index")
+            .execute()
+        )
+        times = chunk_time_entries(res.data or [])
+        if times:
+            cache.set_json(key, times, cache.SEARCH_TTL_SECONDS)
+    return {
+        chunk_id: {
+            "chunk_index": index,
+            "start_time_seconds": start,
+            "end_time_seconds": end,
+        }
+        for chunk_id, (index, start, end) in times.items()
+    }
+
+
+def hydrate_timestamps(
+    context_blocks: List[Dict[str, Any]], lecture_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     The match_multimodal_chunks RPC only returns id, composite_content and similarity,
     so we look up start/end seconds by id without touching the RPC. If that lookup
     fails, we fall back to the time range the chunker embedded in composite_content.
+    Blocks that already carry their times (literal and overview routes) need no lookup, and
+    with a lecture_id the lookup is the lecture's cached time map instead of a query.
     """
-    ids = [block["id"] for block in context_blocks if block.get("id") is not None]
+    missing = [
+        block["id"]
+        for block in context_blocks
+        if block.get("id") is not None and block.get("start_time_seconds") is None
+    ]
     time_map: Dict[Any, Dict[str, Any]] = {}
 
-    if ids:
+    if missing:
         try:
-            res = (
-                supabase.table("multimodal_chunks")
-                .select("id, chunk_index, start_time_seconds, end_time_seconds")
-                .in_("id", ids)
-                .execute()
-            )
-            time_map = {row["id"]: row for row in (res.data or [])}
+            if lecture_id:
+                times = lecture_chunk_times(lecture_id)
+                time_map = {i: times[str(i)] for i in missing if str(i) in times}
+            else:
+                res = (
+                    supabase.table("multimodal_chunks")
+                    .select("id, chunk_index, start_time_seconds, end_time_seconds")
+                    .in_("id", missing)
+                    .execute()
+                )
+                time_map = {row["id"]: row for row in (res.data or [])}
         except Exception as e:
             print(f"[SYNTHESIZER WARNING] Timestamp lookup failed, using fallback: {e}")
 
     hydrated = []
     for block in context_blocks:
-        row = time_map.get(block.get("id"), {})
+        row = time_map.get(block.get("id")) or block
         start = row.get("start_time_seconds")
         end = row.get("end_time_seconds")
 
@@ -204,13 +271,33 @@ def call_gemini(prompt: str) -> Tuple[str, str]:
     )
 
 
-def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
+def synthesize_answer(
+    query: str, lecture_id: str, use_cache: bool = True
+) -> Dict[str, Any]:
     """
     Task 14: Routes the query (Task 13), then generates a grounded,
     timestamp-cited answer from the retrieved multimodal chunks.
+    Task 19: a grounded answer is cached per lecture and question, so asking the same thing
+    again (any case or spacing) returns at once with no Gemini call. use_cache=False always
+    writes a fresh answer, e.g. when the student presses Regenerate on the summary.
     """
+    started = time.perf_counter()
+    answer_key = cache.lecture_key(
+        "answer", lecture_id, CHAT_MODEL, cache.text_hash(query)
+    )
+    if use_cache:
+        stored = cache.get_json(answer_key)
+        if stored is not None:
+            print("[SYNTHESIZER] Answer served from the cache (no Gemini call).")
+            return {
+                **stored,
+                "cached": True,
+                "timings_ms": {"total_ms": elapsed_ms(started)},
+            }
+
     routed = hybrid_intelligent_router(query, lecture_id)
     context_blocks = routed["context_blocks"]
+    timings = dict(routed.get("timings_ms") or {})
 
     # No retrieved context means nothing to ground on, so skip the Gemini call entirely
     if not context_blocks:
@@ -222,9 +309,13 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
             "citations": [],
             "sources": [],
             "model": None,
+            "cached": False,
+            "timings_ms": {**timings, "total_ms": elapsed_ms(started)},
         }
 
-    blocks = hydrate_timestamps(context_blocks)
+    step = time.perf_counter()
+    blocks = hydrate_timestamps(context_blocks, lecture_id)
+    timings["timestamps_ms"] = elapsed_ms(step)
     overview = routed["intent"] == "overview"
     if overview:
         context = build_context_prompt(
@@ -244,7 +335,9 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
     print(
         f"[SYNTHESIZER] Generating answer with {CHAT_MODEL} from {len(blocks)} blocks..."
     )
+    step = time.perf_counter()
     raw_answer, model = call_gemini(prompt)
+    timings["generation_ms"] = elapsed_ms(step)
 
     if not raw_answer or NOT_COVERED.lower() in raw_answer.lower():
         answer, citations, grounded = NOT_COVERED, [], False
@@ -252,7 +345,7 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
         answer, citations = validate_citations(raw_answer, blocks)
         grounded = True
 
-    return {
+    result = {
         "query": query,
         "intent": routed["intent"],
         "answer": answer,
@@ -269,3 +362,16 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
             for b in blocks
         ],
     }
+    # A "Not covered" reply may be Gemini having a bad moment, so only grounded answers are kept
+    if use_cache and grounded:
+        cache.set_json(answer_key, result, cache.ANSWER_TTL_SECONDS)
+    timings["total_ms"] = elapsed_ms(started)
+    print(
+        "[SYNTHESIZER] Timings (ms): "
+        + ", ".join(f"{k[:-3]} {v:.0f}" for k, v in timings.items())
+    )
+    return {**result, "cached": False, "timings_ms": timings}
+
+
+def elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 1)

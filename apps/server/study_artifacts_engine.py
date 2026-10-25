@@ -336,7 +336,8 @@ def _write_summary(lecture_id: str) -> Dict[str, Any]:
                 "migrations/006_workspace.sql, which allows the 'summary' kind."
             ) from e
 
-        result = synthesize_answer(SUMMARY_QUERY, lecture_id)
+        # Regenerate must write a new summary, never return a cached answer
+        result = synthesize_answer(SUMMARY_QUERY, lecture_id, use_cache=False)
         if not result["grounded"]:
             raise ValueError(
                 "Gemini could not summarize this lecture. Check that ingestion completed "

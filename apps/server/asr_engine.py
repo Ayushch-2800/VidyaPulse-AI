@@ -1,7 +1,11 @@
 import os
+import re
 import threading
-from typing import Dict, Any
+from typing import Dict, Any, List
 from faster_whisper import WhisperModel
+
+# A segment needs at least one letter or digit in any script; "...", "♪" or "" is not speech
+SPEECH_PATTERN = re.compile(r"[^\W_]")
 
 # 1. Load the model once per process, on first use rather than at import time.
 # We use "base" on "cpu" with "int8" for extreme speed and low RAM usage.
@@ -27,6 +31,30 @@ def get_whisper_model() -> WhisperModel:
                 _model = WhisperModel("base", device="cpu", compute_type="int8")
             print("[ASR SETUP] Whisper model loaded successfully.", flush=True)
     return _model
+
+
+def clean_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Task 19: Tidies Whisper output from low-quality audio. Drops segments with no words
+    (music notes, "...") and merges back-to-back repeats of the same text, which is how
+    Whisper hallucinates over noise or silence ("Thank you. Thank you. Thank you.").
+    Timing is kept: a merged segment ends where the last repeat ended.
+    """
+    cleaned: List[Dict[str, Any]] = []
+    for segment in segments:
+        text = " ".join((segment.get("text") or "").split())
+        if not SPEECH_PATTERN.search(text):
+            continue
+        start = float(segment["start_time_seconds"])
+        end = max(start, float(segment["end_time_seconds"]))
+        previous = cleaned[-1] if cleaned else None
+        if previous and previous["text"].lower() == text.lower():
+            previous["end_time_seconds"] = max(previous["end_time_seconds"], end)
+            continue
+        cleaned.append(
+            {"start_time_seconds": start, "end_time_seconds": end, "text": text}
+        )
+    return cleaned
 
 
 def transcribe_multilingual_audio(
@@ -62,22 +90,18 @@ def transcribe_multilingual_audio(
                 }
             )
 
-        print(
-            f"[ASR PIPELINE] Successfully extracted {len(formatted_segments)} audio chunks."
-        )
+        cleaned = clean_segments(formatted_segments)
+        if len(cleaned) < len(formatted_segments):
+            print(
+                f"[ASR PIPELINE] Dropped or merged {len(formatted_segments) - len(cleaned)} "
+                "empty or repeated segments (noise, music or silence)."
+            )
+        print(f"[ASR PIPELINE] Successfully extracted {len(cleaned)} audio chunks.")
 
-        return {"segments": formatted_segments, "detected_language": detected_lang}
+        return {"segments": cleaned, "detected_language": detected_lang}
 
     except Exception as e:
         print(f"[ASR ERROR] Local transcription failed: {e}")
-        # Return fallback empty data so the pipeline handles failures gracefully
-        return {
-            "segments": [
-                {
-                    "start_time_seconds": 0.0,
-                    "end_time_seconds": 1.0,
-                    "text": "[Audio transcription failed]",
-                }
-            ],
-            "detected_language": "unknown",
-        }
+        # No placeholder text: indexing "[Audio transcription failed]" as if it were the
+        # lecture made chat answer from it. The pipelines check "error" and mark it failed.
+        return {"segments": [], "detected_language": "unknown", "error": str(e)}
