@@ -13,8 +13,9 @@ if __name__ == "__main__":
     # Imports Supabase and Gemini step by step, so a stall names the exact step
     preload("STUDY SET")
 
+import threading
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,11 @@ OPTIONS_PER_QUESTION = 4
 MAX_CONTEXT_CHARS = 60000
 # Phrased so the query router takes its overview route, which samples the whole lecture in order
 SUMMARY_QUERY = "Give me a summary of this lecture, covering its main topics in the order they are taught."
+
+# Lectures whose summary is being written right now, so a second click (or the post-ingestion
+# job) waits for that run instead of spending another Gemini call on the same summary
+_summaries_running: set = set()
+_summaries_lock = threading.Lock()
 
 
 class Flashcard(BaseModel):
@@ -254,12 +260,61 @@ def generate_study_set(lecture_id: str) -> Dict[str, Any]:
         return {"status": "failed", "error": str(e)}
 
 
+def summary_running(lecture_id: str) -> bool:
+    with _summaries_lock:
+        return lecture_id in _summaries_running
+
+
+def cached_summary(lecture_id: str) -> Optional[Dict[str, Any]]:
+    """The stored summary as a /chat/ask answer, or None if there is no finished one."""
+    try:
+        res = (
+            supabase.table("study_artifacts")
+            .select("status, content, model")
+            .eq("lecture_id", lecture_id)
+            .eq("kind", "summary")
+            .execute()
+        )
+    except Exception as e:
+        log(
+            SUMMARY_TAG,
+            f"Could not read the stored summary ({e}); asking Gemini instead.",
+        )
+        return None
+    row = (res.data or [None])[0]
+    content = (row or {}).get("content") or {}
+    if not row or row.get("status") != "completed" or not content.get("answer"):
+        return None
+    return {
+        "answer": content["answer"],
+        "citations": content.get("citations") or [],
+        "model": row.get("model"),
+    }
+
+
 def generate_summary(lecture_id: str) -> Dict[str, Any]:
     """
     Task 18: Writes the lecture summary with the same grounded, [MM:SS]-cited synthesizer as
-    /chat/ask and saves it to study_artifacts, so the workspace and the PDF export show it
-    without another Gemini call.
+    /chat/ask and saves it to study_artifacts, so the workspace, the PDF export and summary
+    questions in /chat/ask show it without another Gemini call. If this lecture's summary is
+    already being written, returns right away instead of starting a second run.
     """
+    with _summaries_lock:
+        if lecture_id in _summaries_running:
+            log(
+                SUMMARY_TAG,
+                f"Summary for {lecture_id} is already being written; not starting another.",
+            )
+            return {"status": "processing"}
+        _summaries_running.add(lecture_id)
+    try:
+        return _write_summary(lecture_id)
+    finally:
+        with _summaries_lock:
+            _summaries_running.discard(lecture_id)
+
+
+def _write_summary(lecture_id: str) -> Dict[str, Any]:
     log(SUMMARY_TAG, f"--- GENERATING SUMMARY FOR LECTURE {lecture_id} ---")
     user_id = None
 
@@ -290,12 +345,18 @@ def generate_summary(lecture_id: str) -> Dict[str, Any]:
 
         content = {"answer": result["answer"], "citations": result["citations"]}
         log(SUMMARY_TAG, "Saving the summary to Supabase...")
+        # model records which one wrote it, which is the fallback if the main model timed out
         save_study_artifact(
-            lecture_id, user_id, "summary", status="completed", content=content
+            lecture_id,
+            user_id,
+            "summary",
+            status="completed",
+            content=content,
+            model=result["model"],
         )
         log(
             SUMMARY_TAG,
-            f"--- SUMMARY COMPLETE: {len(content['answer']):,} chars, "
+            f"--- SUMMARY COMPLETE with {result['model']}: {len(content['answer']):,} chars, "
             f"{len(content['citations'])} timestamp citations ---",
         )
         return {"status": "completed", **content}

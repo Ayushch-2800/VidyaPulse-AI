@@ -1,8 +1,13 @@
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 
 # CHAT_MODEL is the free-tier Gemini Flash model (GEMINI_CHAT_MODEL env), re-exported for the engines
-from gemini_utils import CHAT_MODEL, generate_text
+from gemini_utils import (
+    CHAT_MODEL,
+    INTERACTIVE_TIMEOUT_SECONDS,
+    MAX_ANSWER_TOKENS,
+    generate_text,
+)
 from storage_utils import supabase
 from query_router import hybrid_intelligent_router
 
@@ -10,12 +15,18 @@ NOT_COVERED = "Not covered in this lecture."
 MAX_CONTEXT_CHARS = (
     24000  # Keeps the prompt small so we stay well inside free-tier token limits
 )
+# An overview needs the gist of each part, not every word: each sampled block is trimmed to
+# this, so the prompt is about 11k chars instead of 15-24k and the free tier answers it sooner
+OVERVIEW_BLOCK_CHARS = 1000
+OVERVIEW_CONTEXT_CHARS = 12000
 TIMESTAMP_TOLERANCE_SECONDS = 5.0
 
 # Matches [MM:SS] (minutes may exceed 59 for long lectures, e.g. [125:30])
 TIMESTAMP_PATTERN = re.compile(r"\[(\d{1,3}):([0-5]\d)\]")
 # Fallback: the chunker writes "### Spoken Transcript (12.3s - 45.6s)" into composite_content
 COMPOSITE_RANGE_PATTERN = re.compile(r"\((\d+(?:\.\d+)?)s\s*-\s*(\d+(?:\.\d+)?)s\)")
+# The chunker puts the slide OCR after this heading, below the spoken transcript
+VISUAL_HEADING = "### Visual Blackboard / Slide Context:"
 
 SYSTEM_PROMPT = f"""
 You are VidyaPulse AI, a study assistant that answers questions about ONE lecture.
@@ -85,7 +96,32 @@ def hydrate_timestamps(context_blocks: List[Dict[str, Any]]) -> List[Dict[str, A
     return hydrated
 
 
-def build_context_prompt(blocks: List[Dict[str, Any]]) -> str:
+def shorten(text: str, limit: int) -> str:
+    """Cuts text to about `limit` chars at a word boundary."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0] + " …"
+
+
+def trim_block(body: str, limit: int) -> str:
+    """Keeps the start of the transcript (2/3 of the budget) and of the slide text (1/3)."""
+    if len(body) <= limit:
+        return body
+    transcript, _, visual = body.partition(VISUAL_HEADING)
+    if not visual.strip():
+        return shorten(body, limit)
+    return (
+        f"{shorten(transcript, limit * 2 // 3)}\n\n"
+        f"{VISUAL_HEADING}\n{shorten(visual, limit // 3)}"
+    )
+
+
+def build_context_prompt(
+    blocks: List[Dict[str, Any]],
+    max_chars: int = MAX_CONTEXT_CHARS,
+    max_block_chars: Optional[int] = None,
+) -> str:
     """Wraps each chunk in a header carrying its [MM:SS] citation label."""
     parts = []
     used_chars = 0
@@ -99,9 +135,11 @@ def build_context_prompt(blocks: List[Dict[str, Any]]) -> str:
             header = f"--- Context Block {i} | no timestamp available ---"
 
         body = block.get("composite_content", "").strip()
+        if max_block_chars:
+            body = trim_block(body, max_block_chars)
         entry = f"{header}\n{body}"
 
-        if used_chars + len(entry) > MAX_CONTEXT_CHARS:
+        if used_chars + len(entry) > max_chars:
             break
         parts.append(entry)
         used_chars += len(entry)
@@ -150,9 +188,20 @@ def validate_citations(
     return cleaned, citations
 
 
-def call_gemini(prompt: str) -> str:
-    """Calls Gemini Flash with a hard timeout and short logged backoff on free-tier 429/503."""
-    return generate_text(prompt, SYSTEM_PROMPT, temperature=0.2, tag="SYNTHESIZER")
+def call_gemini(prompt: str) -> Tuple[str, str]:
+    """
+    Calls Gemini Flash for a student who is waiting: a short deadline, a capped answer length,
+    and a switch to the faster fallback model after a timeout. Returns (answer, model).
+    """
+    return generate_text(
+        prompt,
+        SYSTEM_PROMPT,
+        temperature=0.2,
+        tag="SYNTHESIZER",
+        max_output_tokens=MAX_ANSWER_TOKENS,
+        timeout_seconds=INTERACTIVE_TIMEOUT_SECONDS,
+        fallback=True,
+    )
 
 
 def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
@@ -172,24 +221,30 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
             "grounded": False,
             "citations": [],
             "sources": [],
+            "model": None,
         }
 
     blocks = hydrate_timestamps(context_blocks)
-    prompt = (
-        f"LECTURE CONTEXT:\n\n{build_context_prompt(blocks)}\n\n"
-        f"STUDENT QUESTION:\n{query}"
-    )
-    if routed["intent"] == "overview":
+    overview = routed["intent"] == "overview"
+    if overview:
+        context = build_context_prompt(
+            blocks, OVERVIEW_CONTEXT_CHARS, OVERVIEW_BLOCK_CHARS
+        )
+    else:
+        context = build_context_prompt(blocks)
+    prompt = f"LECTURE CONTEXT:\n\n{context}\n\nSTUDENT QUESTION:\n{query}"
+    if overview:
         prompt += (
-            f"\n\nNOTE: The student wants an overview. The {len(blocks)} blocks above are sampled evenly "
-            "across the whole lecture, in order. Summarize the lecture's main topics in the order they "
-            "are taught, citing each block's timestamp. Do not reply that it is not covered."
+            f"\n\nNOTE: The student wants an overview. The {len(blocks)} blocks above are excerpts sampled "
+            "evenly across the whole lecture, in order. Summarize the lecture's main topics in the order they "
+            "are taught, citing each block's timestamp. Keep it under 250 words: one sentence on what the "
+            "lecture is about, then at most 8 bullet points. Do not reply that it is not covered."
         )
 
     print(
         f"[SYNTHESIZER] Generating answer with {CHAT_MODEL} from {len(blocks)} blocks..."
     )
-    raw_answer = call_gemini(prompt)
+    raw_answer, model = call_gemini(prompt)
 
     if not raw_answer or NOT_COVERED.lower() in raw_answer.lower():
         answer, citations, grounded = NOT_COVERED, [], False
@@ -203,6 +258,7 @@ def synthesize_answer(query: str, lecture_id: str) -> Dict[str, Any]:
         "answer": answer,
         "grounded": grounded,
         "citations": citations,
+        "model": model,
         "sources": [
             {
                 "id": b.get("id"),

@@ -46,6 +46,8 @@ type ChatTurn = {
   answer?: string;
   citations?: Citation[];
   error?: string;
+  /** Answered from the stored lecture summary instead of a new Gemini call */
+  cached?: boolean;
 };
 
 const inputStyle: React.CSSProperties = {
@@ -114,7 +116,9 @@ const ChatTurns = memo(function ChatTurns({
             {turn.error ? (
               <p style={{ margin: 0, color: "#B91C1C" }}>{turn.error}</p>
             ) : turn.answer === undefined ? (
-              <p style={{ margin: 0, color: "#6B7280" }}>Thinking…</p>
+              <p style={{ margin: 0, color: "#6B7280" }}>
+                Thinking… Gemini&apos;s free tier can take up to a minute.
+              </p>
             ) : (
               <>
                 <CitedAnswer
@@ -122,6 +126,17 @@ const ChatTurns = memo(function ChatTurns({
                   citations={turn.citations}
                   onSeek={onSeek}
                 />
+                {turn.cached && (
+                  <p
+                    style={{
+                      margin: "8px 0 0",
+                      fontSize: "0.85em",
+                      color: "#6B7280",
+                    }}
+                  >
+                    From the saved lecture summary, so no wait for Gemini.
+                  </p>
+                )}
                 {onSaveNote && (
                   <div style={{ marginTop: "10px" }}>
                     <SaveNoteButton
@@ -262,7 +277,11 @@ export default function ChatPage() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "The request failed.");
-      finish({ answer: data.answer, citations: data.citations });
+      finish({
+        answer: data.answer,
+        citations: data.citations,
+        cached: data.cached === true,
+      });
     } catch (err) {
       finish({ error: err instanceof Error ? err.message : String(err) });
     } finally {
