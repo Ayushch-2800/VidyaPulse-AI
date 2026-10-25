@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import { apiFetch, errorMessage } from "@/lib/workspace";
+import { ApiError, apiFetch } from "@/lib/workspace";
 
 // Must match LANGUAGES in apps/server/translator.py
 export const LANGUAGES = [
@@ -136,49 +136,125 @@ function saveTranslations() {
 }
 
 async function fetchTranslations(language: LanguageCode, texts: string[]) {
-  for (let start = 0; start < texts.length; start += MAX_TEXTS_PER_REQUEST) {
-    const batch = texts.slice(start, start + MAX_TEXTS_PER_REQUEST);
-    const data = await apiFetch<{ translations: string[] }>("/translate", {
-      method: "POST",
-      body: JSON.stringify({ texts: batch, language }),
-    });
-    data.translations.forEach((translated, i) =>
-      translations.set(cacheKey(language, batch[i]), translated),
-    );
+  try {
+    for (let start = 0; start < texts.length; start += MAX_TEXTS_PER_REQUEST) {
+      const batch = texts.slice(start, start + MAX_TEXTS_PER_REQUEST);
+      const data = await apiFetch<{ translations: string[] }>("/translate", {
+        method: "POST",
+        body: JSON.stringify({ texts: batch, language }),
+      });
+      data.translations.forEach((translated, i) =>
+        translations.set(cacheKey(language, batch[i]), translated),
+      );
+    }
+  } catch (err) {
+    // The daily free quota is used up: stop asking for a while instead of failing each text
+    if (err instanceof ApiError && err.status === 429)
+      quotaPausedUntil = Date.now() + QUOTA_PAUSE_MS;
+    throw err;
+  } finally {
+    saveTranslations();
   }
-  saveTranslations();
 }
 
-/** One request per distinct set of texts, however many components ask for it at once. */
-function requestTranslations(language: LanguageCode, texts: string[]) {
-  const key = cacheKey(language, JSON.stringify(texts));
-  let request = inflight.get(key);
-  if (!request) {
-    request = fetchTranslations(language, texts).finally(() =>
-      inflight.delete(key),
-    );
-    inflight.set(key, request);
+// Texts asked for within this window go to the backend together, so the summary, cheat
+// sheet, flashcards, quiz, notes and answers of a lecture cost as few Gemini calls as possible
+const COALESCE_MS = 60;
+// After the backend says the daily quota is used up, don't ask again for this long
+const QUOTA_PAUSE_MS = 5 * 60 * 1000;
+let quotaPausedUntil = 0;
+const queued = new Map<
+  LanguageCode,
+  { texts: Set<string>; done: Promise<void> }
+>();
+
+export class TranslationQuotaError extends Error {}
+
+/**
+ * Resolves once every text is translated. A text already on its way is waited for rather than
+ * asked for again, and texts asked for at about the same time share one request.
+ */
+function requestTranslations(
+  language: LanguageCode,
+  texts: string[],
+): Promise<void> {
+  if (Date.now() < quotaPausedUntil)
+    return Promise.reject(new TranslationQuotaError("quota"));
+  const waits: Promise<void>[] = [];
+  const fresh: string[] = [];
+  for (const text of texts) {
+    const key = cacheKey(language, text);
+    if (translations.has(key)) continue;
+    const pending = inflight.get(key);
+    if (pending) waits.push(pending);
+    else fresh.push(text);
   }
-  return request;
+  if (fresh.length) {
+    let batch = queued.get(language);
+    if (!batch) {
+      const group = new Set<string>();
+      const done = new Promise<void>((resolve) =>
+        window.setTimeout(resolve, COALESCE_MS),
+      ).then(() => {
+        queued.delete(language);
+        return fetchTranslations(language, [...group]);
+      });
+      batch = { texts: group, done };
+      queued.set(language, batch);
+    }
+    const { done } = batch;
+    for (const text of fresh) {
+      batch.texts.add(text);
+      inflight.set(cacheKey(language, text), done);
+    }
+    const clear = () =>
+      fresh.forEach((text) => {
+        if (inflight.get(cacheKey(language, text)) === done)
+          inflight.delete(cacheKey(language, text));
+      });
+    done.then(clear, clear);
+    waits.push(done);
+  }
+  return Promise.all(waits).then(() => undefined);
+}
+
+/** A short notice for the student; the backend's full error stays in its log. */
+function unavailableMessage(language: LanguageCode, err: unknown): string {
+  const quota =
+    err instanceof TranslationQuotaError ||
+    (err instanceof ApiError && err.status === 429);
+  return quota
+    ? `${languageLabel(language)} isn't available right now because today's free AI limit is used up. Showing English until it resets.`
+    : `${languageLabel(language)} isn't available right now. Showing English for now.`;
 }
 
 export type Translation = {
   /** The text in the chosen language, or the original until its translation arrives. */
   t: (text: string) => string;
+  /** True once `text` can be shown in the chosen language (always true for English). */
+  ready: (text: string) => boolean;
   language: LanguageCode;
   translating: boolean;
+  /** A short notice when the translation couldn't be loaded; content then shows in English. */
   error: string | null;
+  retry: () => void;
 };
 
 /**
- * Translates `texts` into the language from LanguageContext. Pass every text the component
- * shows; render each through t(). Pass enabled=false while the component is hidden so no
- * Gemini call is spent on it.
+ * Translates `texts` into the language from LanguageContext (or `language`, for a component
+ * outside the provider). Pass every text the component shows; render each through t(). Pass
+ * enabled=false while the component is hidden so no Gemini call is spent on it.
  */
-export function useTranslation(texts: string[], enabled = true): Translation {
-  const language = useContext(LanguageContext);
+export function useTranslation(
+  texts: string[],
+  enabled = true,
+  languageOverride?: LanguageCode,
+): Translation {
+  const contextLanguage = useContext(LanguageContext);
+  const language = languageOverride ?? contextLanguage;
   restoreTranslations();
   const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const [attempt, retry] = useReducer((n: number) => n + 1, 0);
   const [failure, setFailure] = useState<{
     key: string;
     message: string;
@@ -191,7 +267,7 @@ export function useTranslation(texts: string[], enabled = true): Translation {
           (text) => text.trim() && !translations.has(cacheKey(language, text)),
         );
   const requestKey = missing.length
-    ? JSON.stringify({ language, texts: missing })
+    ? JSON.stringify({ language, texts: missing, attempt })
     : "";
 
   useEffect(() => {
@@ -207,7 +283,10 @@ export function useTranslation(texts: string[], enabled = true): Translation {
       },
       (err) => {
         if (!cancelled)
-          setFailure({ key: requestKey, message: errorMessage(err) });
+          setFailure({
+            key: requestKey,
+            message: unavailableMessage(request.language, err),
+          });
       },
     );
     return () => {
@@ -216,13 +295,19 @@ export function useTranslation(texts: string[], enabled = true): Translation {
   }, [requestKey]);
 
   const failed = failure !== null && failure.key === requestKey;
+  const ready = (text: string) =>
+    language === SOURCE_LANGUAGE ||
+    !text.trim() ||
+    translations.has(cacheKey(language, text));
   return {
     t: (text: string) =>
       language === SOURCE_LANGUAGE
         ? text
         : (translations.get(cacheKey(language, text)) ?? text),
+    ready,
     language,
     translating: requestKey !== "" && !failed,
     error: failed ? failure.message : null,
+    retry,
   };
 }

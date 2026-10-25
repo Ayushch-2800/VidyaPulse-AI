@@ -13,8 +13,26 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A short message for the student in place of a raw API error (JSON dumps, quota details,
+ * stack text). Readable messages from the backend pass through unchanged.
+ */
+export function friendlyError(message: string, status?: number): string {
+  // The backend answers 429 only once the daily free quota is spent
+  if (status === 429 || /today's free|PerDay|per day/i.test(message))
+    return "Today's free AI limit is used up, so this isn't available right now. It resets within a day.";
+  if (/RESOURCE_EXHAUSTED|\b429\b|failed after/i.test(message))
+    return "The AI service is busy right now. Please try again in a minute.";
+  const raw =
+    message.length > 240 ||
+    /[{[]\s*['"]|Traceback|Exception|\b[45]\d\d [A-Z_]{4,}/.test(message);
+  return raw
+    ? "The AI service isn't responding right now. Please try again in a minute."
+    : message;
+}
+
 export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return friendlyError(err instanceof Error ? err.message : String(err));
 }
 
 /** Calls the FastAPI backend and throws the backend's `detail` message on failure. */
@@ -31,7 +49,10 @@ export async function apiFetch<T>(
   if (!response.ok) {
     throw new ApiError(
       response.status,
-      data.detail || `The request failed (HTTP ${response.status}).`,
+      friendlyError(
+        data.detail || `The request failed (HTTP ${response.status}).`,
+        response.status,
+      ),
     );
   }
   return data as T;

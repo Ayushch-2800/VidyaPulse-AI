@@ -11,6 +11,7 @@ import {
 import ArtifactFrame from "./ArtifactFrame";
 import SaveNoteButton from "./SaveNoteButton";
 import TranslationNote from "./TranslationNote";
+import { summaryTexts } from "./studyTexts";
 
 /** The stored lecture summary, with [MM:SS] buttons, in the chosen language. */
 export default function SummaryPanel({
@@ -25,9 +26,12 @@ export default function SummaryPanel({
   onSaveNote: (note: NewNote) => Promise<unknown>;
 }) {
   const artifact = useArtifact<SummaryContent>(lectureId, "summary", active);
-  const answer =
-    artifact.row?.status === "completed" ? artifact.row.content.answer : "";
-  const translation = useTranslation([answer], active);
+  const translation = useTranslation(
+    artifact.row?.status === "completed"
+      ? summaryTexts(artifact.row.content)
+      : [],
+    active,
+  );
 
   return (
     <ArtifactFrame
@@ -39,23 +43,24 @@ export default function SummaryPanel({
     >
       {(row) => (
         <>
-          <TranslationNote translation={translation} />
-          <CitedAnswer
-            answer={translation.t(row.content.answer)}
-            citations={row.content.citations}
-            onSeek={onSeek}
-          />
-          <div style={{ marginTop: "12px" }}>
-            <SaveNoteButton
-              note={{
-                kind: "answer",
-                title: "Lecture summary",
-                body: row.content.answer,
-                timestamp_seconds: null,
-              }}
-              onSave={onSaveNote}
+          <TranslationNote translation={translation}>
+            <CitedAnswer
+              answer={translation.t(row.content.answer)}
+              citations={row.content.citations}
+              onSeek={onSeek}
             />
-          </div>
+            <div style={{ marginTop: "12px" }}>
+              <SaveNoteButton
+                note={{
+                  kind: "answer",
+                  title: "Lecture summary",
+                  body: row.content.answer,
+                  timestamp_seconds: null,
+                }}
+                onSave={onSaveNote}
+              />
+            </div>
+          </TranslationNote>
         </>
       )}
     </ArtifactFrame>

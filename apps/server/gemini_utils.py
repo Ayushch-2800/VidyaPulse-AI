@@ -9,10 +9,12 @@ back-to-back calls stay under the free-tier requests-per-minute quota.
 import faulthandler
 import importlib
 import os
+import re
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Type, TypeVar
+from typing import Dict, List, Optional, Tuple, Type, TypeVar
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -55,6 +57,21 @@ _client = None
 
 class GeminiKeyError(RuntimeError):
     """The Gemini API rejected the key. Retrying will never help."""
+
+
+class GeminiQuotaError(RuntimeError):
+    """Every model this call may use has spent its daily free-tier quota. Retrying won't help today."""
+
+
+QUOTA_MESSAGE = (
+    "Today's free Gemini quota is used up. It resets within a day; to keep going now, "
+    "use another API key or enable billing for this one."
+)
+# How long to skip a model whose daily quota ran out, when Gemini doesn't say
+DEFAULT_QUOTA_PAUSE_SECONDS = 3600
+# Models whose daily quota ran out, and when (time.monotonic) to try them again
+_exhausted_until: Dict[str, float] = {}
+_exhausted_lock = threading.Lock()
 
 
 def log(tag: str, message: str) -> None:
@@ -140,8 +157,44 @@ def is_timeout_error(error: Exception) -> bool:
     )
 
 
+def is_daily_quota_error(error: Exception) -> bool:
+    """A 429 for the per-day request quota, as opposed to the per-minute one that clears quickly."""
+    text = str(error)
+    return ("429" in text or "RESOURCE_EXHAUSTED" in text) and (
+        "PerDay" in text or "per day" in text.lower()
+    )
+
+
+def quota_retry_seconds(error: Exception) -> float:
+    """The retryDelay Gemini sends with a 429, e.g. 'retryDelay': '50945s'."""
+    match = re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", str(error))
+    return float(match.group(1)) if match else DEFAULT_QUOTA_PAUSE_SECONDS
+
+
+def mark_quota_exhausted(model: str, error: Exception, tag: str) -> None:
+    pause = quota_retry_seconds(error)
+    with _exhausted_lock:
+        _exhausted_until[model] = time.monotonic() + pause
+    log(
+        tag,
+        f"{model}'s daily free-tier quota is used up; not calling it again for "
+        f"{pause / 3600:.1f}h.",
+    )
+
+
+def quota_exhausted(model: str) -> bool:
+    with _exhausted_lock:
+        until = _exhausted_until.get(model)
+        if until is not None and time.monotonic() >= until:
+            del _exhausted_until[model]
+            return False
+        return until is not None
+
+
 def friendly_error(error: Exception, timeout_seconds: int) -> str:
     """A short reason for the UI; the full Gemini error stays in the server log."""
+    if isinstance(error, GeminiQuotaError) or is_daily_quota_error(error):
+        return QUOTA_MESSAGE
     if is_timeout_error(error):
         return (
             f"Gemini's free tier timed out on every try ({timeout_seconds}s each, 504 DEADLINE_EXCEEDED). "
@@ -245,11 +298,14 @@ def _generate(
     max_retries: int,
     timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
     fallback_model: str = "",
+    model: Optional[str] = None,
 ):
     """
-    Calls CHAT_MODEL with a hard deadline and logged retries, and returns (response, model).
-    With a fallback_model, a timeout switches the remaining attempts to that faster model
-    straight away instead of waiting out the same deadline again.
+    Calls `model` (CHAT_MODEL by default) with a hard deadline and logged retries, and returns
+    (response, model). With a fallback_model, a timeout switches the remaining attempts to that
+    faster model straight away instead of waiting out the same deadline again, and a model
+    whose daily quota is used up hands over to it (each model has its own quota). When no
+    usable model is left this raises GeminiQuotaError at once instead of retrying.
     """
     from google.genai import types
 
@@ -264,7 +320,17 @@ def _generate(
             )
         }
     )
-    model = CHAT_MODEL
+    primary = model or CHAT_MODEL
+    model = primary
+    if (
+        quota_exhausted(model)
+        and fallback_model
+        and not quota_exhausted(fallback_model)
+    ):
+        log(tag, f"{model}'s daily quota is used up; using {fallback_model}.")
+        model = fallback_model
+    if quota_exhausted(model):
+        raise GeminiQuotaError(QUOTA_MESSAGE)
     last_problem = "Gemini returned no response."
     for attempt in range(1, max_retries + 1):
         if pace:
@@ -282,14 +348,29 @@ def _generate(
         except Exception as e:
             # A retired or misspelled model name: retrying won't help, so say how to fix it
             if "NOT_FOUND" in str(e) and "models/" in str(e):
-                if model != CHAT_MODEL:
+                if model != primary:
                     log(
                         tag,
                         f"Gemini has no model named {model!r}; set GEMINI_FALLBACK_MODEL in "
-                        f"{SERVER_DIR / '.env'} to one your key can use. Going back to {CHAT_MODEL}.",
+                        f"{SERVER_DIR / '.env'} to one your key can use. Going back to {primary}.",
                     )
-                    model, fallback_model = CHAT_MODEL, ""
+                    model, fallback_model = primary, ""
                     continue
+                if model != CHAT_MODEL:
+                    # A task-specific model (e.g. GEMINI_TRANSLATE_MODEL) that doesn't exist
+                    if fallback_model:
+                        log(
+                            tag,
+                            f"Gemini has no model named {model!r}; using {fallback_model}. "
+                            f"Fix the model name in {SERVER_DIR / '.env'}.",
+                        )
+                        model = primary = fallback_model
+                        fallback_model = ""
+                        continue
+                    raise RuntimeError(
+                        f"Gemini has no model named {model!r}. Set it in {SERVER_DIR / '.env'} "
+                        f"to a model your key can use. Gemini said: {e}"
+                    ) from e
                 raise RuntimeError(
                     f"Gemini has no model named {CHAT_MODEL!r}. Set GEMINI_CHAT_MODEL in "
                     f"{SERVER_DIR / '.env'} to a model your key can use. Gemini said: {e}"
@@ -299,6 +380,20 @@ def _generate(
                 log(tag, f"{model} rejected the thinking level; retrying without it.")
                 config = config.model_copy(update={"thinking_config": None})
                 continue
+            if is_daily_quota_error(e):
+                mark_quota_exhausted(model, e, tag)
+                if (
+                    fallback_model
+                    and model != fallback_model
+                    and not quota_exhausted(fallback_model)
+                ):
+                    log(
+                        tag,
+                        f"Switching to {fallback_model}, which has its own quota...",
+                    )
+                    model = fallback_model
+                    continue
+                raise GeminiQuotaError(QUOTA_MESSAGE) from e
             if fallback_model and model != fallback_model and is_timeout_error(e):
                 log(
                     tag,
@@ -362,7 +457,7 @@ def generate_text(
         response, model = _generate(
             prompt, config, tag, pace, max_retries, timeout_seconds, fallback_model
         )
-    except GeminiKeyError:
+    except (GeminiKeyError, GeminiQuotaError):
         raise
     except Exception as e:
         log(tag, f"Giving up: {e}")
@@ -391,6 +486,8 @@ def generate_structured(
     max_retries: int = MAX_RETRIES,
     timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
     fallback: bool = False,
+    model: Optional[str] = None,
+    fallback_model: Optional[str] = None,
 ) -> T:
     """
     Calls Gemini Flash in JSON mode with a pydantic schema, with timeout, pacing and logged
@@ -408,9 +505,12 @@ def generate_structured(
         response_schema=schema,
         **options,
     )
-    fallback_model = FALLBACK_MODEL if fallback and FALLBACK_MODEL != CHAT_MODEL else ""
+    if fallback_model is None:
+        fallback_model = FALLBACK_MODEL if fallback else ""
+    if fallback_model == (model or CHAT_MODEL):
+        fallback_model = ""
     response, _ = _generate(
-        prompt, config, tag, pace, max_retries, timeout_seconds, fallback_model
+        prompt, config, tag, pace, max_retries, timeout_seconds, fallback_model, model
     )
     if isinstance(response.parsed, schema):
         return response.parsed

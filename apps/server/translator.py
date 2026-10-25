@@ -9,6 +9,7 @@ back afterwards, so Gemini can never mangle LaTeX or move a timestamp.
 
 import hashlib
 import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
@@ -17,13 +18,18 @@ from pydantic import BaseModel
 
 from gemini_utils import (
     CHAT_MODEL,
+    FALLBACK_MODEL,
     INTERACTIVE_TIMEOUT_SECONDS,
+    GeminiQuotaError,
     generate_structured,
     log,
 )
 from storage_utils import supabase
 
 TAG = "TRANSLATE"
+
+# Re-exported so main.py can answer 429 when today's quota is used up
+TranslationQuotaError = GeminiQuotaError
 
 # The codes the frontend's language switch sends. Generated content is written in English.
 LANGUAGES = {
@@ -36,11 +42,18 @@ LANGUAGES = {
 }
 SOURCE_LANGUAGE = "en"
 MAX_TEXTS_PER_REQUEST = 300
-# Indic scripts take several times more output tokens than English, so keep each call small;
-# small calls running side by side finish far sooner than one long call
-MAX_BATCH_CHARS = 2500
+# Translation is a simple task, so it runs on the fast Flash-Lite model by default, which also
+# has its own free-tier quota, separate from (and larger than) the main chat model's. When its
+# daily quota runs out, translation moves on to the main model.
+TRANSLATE_MODEL = (
+    os.getenv("GEMINI_TRANSLATE_MODEL", "").strip() or FALLBACK_MODEL or CHAT_MODEL
+)
+# The free tier counts requests per day, so each call carries a lot: a whole lecture's study
+# set usually fits in two calls. Indic scripts take several times more output tokens than
+# English, so a call is not made bigger than this.
+MAX_BATCH_CHARS = 8000
 # Gemini calls in flight at once for one request. Higher risks the free tier's per-minute quota.
-PARALLEL_CALLS = 4
+PARALLEL_CALLS = 3
 # A longer text (a summary) is split at paragraph breaks into parts of about this size, so its
 # parts translate in parallel instead of in one slow call
 MAX_PIECE_CHARS = 1200
@@ -201,13 +214,14 @@ def translate_batch(texts: List[str], language: str) -> List[Optional[str]]:
         translation_prompt(language),
         TranslationBatch,
         # Google advises against lowering Gemini 3's temperature: it can loop until the deadline
-        temperature=None if CHAT_MODEL.startswith("gemini-3") else 0.2,
+        temperature=None if TRANSLATE_MODEL.startswith("gemini-3") else 0.2,
         tag=TAG,
         # A student is waiting on this: no free-tier pacing, the short deadline, then the faster model
         pace=False,
         max_retries=3,
         timeout_seconds=INTERACTIVE_TIMEOUT_SECONDS,
-        fallback=True,
+        model=TRANSLATE_MODEL,
+        fallback_model=CHAT_MODEL,
     )
     by_id = {item.id: item.text for item in result.items}
 
@@ -295,13 +309,25 @@ def translate_texts(texts: List[str], language: str) -> List[str]:
         f"up to {PARALLEL_CALLS} at a time.",
     )
 
-    def run(batch: List[str]) -> List[Tuple[str, Optional[str]]]:
-        return list(zip(batch, translate_batch(batch, language)))
+    def run(
+        batch: List[str],
+    ) -> Tuple[List[Tuple[str, Optional[str]]], Optional[Exception]]:
+        # Errors are returned, not raised, so the batches that did finish are still cached
+        try:
+            return list(zip(batch, translate_batch(batch, language))), None
+        except Exception as e:
+            return [], e
 
+    failure: Optional[Exception] = None
     with ThreadPoolExecutor(
         max_workers=max(1, min(PARALLEL_CALLS, len(batches)))
     ) as pool:
-        for batch_result in pool.map(run, batches):
+        for batch_result, error in pool.map(run, batches):
+            if error is not None:
+                # A used-up daily quota is the one to report: it says what to do next
+                if failure is None or isinstance(error, GeminiQuotaError):
+                    failure = error
+                continue
             new_rows = []
             for unit, out in batch_result:
                 if out is None:
@@ -312,10 +338,12 @@ def translate_texts(texts: List[str], language: str) -> List[str]:
                         "source_hash": unit_hashes[unit],
                         "language": language,
                         "translated_text": out,
-                        "model": CHAT_MODEL,
+                        "model": TRANSLATE_MODEL,
                     }
                 )
             write_cache(new_rows)
+    if failure is not None:
+        raise failure
 
     whole_rows = []
     for text in missing:
@@ -333,7 +361,7 @@ def translate_texts(texts: List[str], language: str) -> List[str]:
                         "source_hash": hashes[text],
                         "language": language,
                         "translated_text": out,
-                        "model": CHAT_MODEL,
+                        "model": TRANSLATE_MODEL,
                     }
                 )
         for i in positions[text]:

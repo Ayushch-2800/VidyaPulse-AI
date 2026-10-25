@@ -5,25 +5,50 @@ import { useState } from "react";
 import { languageLabel, type Translation } from "@/lib/translate";
 import { useElapsedSeconds } from "@/lib/workspace";
 
-import { errorText, mutedText } from "./styles";
+import { mutedText, secondaryButton } from "./styles";
 
-/** Says when content is being translated, or that the translation failed. */
+const noteStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  flexWrap: "wrap",
+  margin: "0 0 12px",
+  padding: "10px 12px",
+  borderRadius: "12px",
+  border: "1px solid var(--vp-border)",
+  backgroundColor: "var(--vp-surface-2)",
+  fontSize: "0.9em",
+  ...mutedText,
+};
+
+/**
+ * Shows `children` only in the chosen language: while the translation loads it shows a
+ * progress line in their place, so English and the chosen language are never mixed. If the
+ * translation can't be loaded, a short notice says so and the content shows in English.
+ * Without children it is just the notice.
+ */
 export default function TranslationNote({
   translation,
+  children,
 }: {
   translation: Translation;
+  children?: React.ReactNode;
 }) {
-  const { translating, error, language } = translation;
-  if (error) {
-    return (
-      <p style={{ margin: "0 0 12px", fontSize: "0.85em", ...errorText }}>
-        Could not translate into {languageLabel(language)}, so this is the
-        original. {error}
-      </p>
-    );
-  }
-  if (!translating) return null;
-  return <Translating key={language} language={language} />;
+  const { translating, error, language, retry } = translation;
+  if (translating) return <Translating key={language} language={language} />;
+  return (
+    <>
+      {error && (
+        <p role="status" style={noteStyle}>
+          <span>{error}</span>
+          <button type="button" onClick={retry} style={secondaryButton}>
+            Try again
+          </button>
+        </p>
+      )}
+      {children}
+    </>
+  );
 }
 
 function Translating({ language }: { language: Translation["language"] }) {
@@ -31,27 +56,12 @@ function Translating({ language }: { language: Translation["language"] }) {
   const [since] = useState(() => Date.now());
   const elapsed = useElapsedSeconds(since);
   return (
-    <p
-      role="status"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "10px",
-        margin: "0 0 12px",
-        padding: "10px 12px",
-        borderRadius: "12px",
-        border: "1px solid var(--vp-border)",
-        backgroundColor: "var(--vp-surface-2)",
-        fontSize: "0.9em",
-        ...mutedText,
-      }}
-    >
+    <p role="status" style={noteStyle}>
       <span className="vp-spinner" aria-hidden="true" />
       <span>
         Translating into {languageLabel(language)}
-        {elapsed ? ` · ${elapsed}s` : ""}. Showing English until it&apos;s
-        ready. The first time takes a few seconds; after that it opens
-        instantly.
+        {elapsed ? ` · ${elapsed}s` : ""}. The first time takes a few seconds;
+        after that it opens instantly.
       </span>
     </p>
   );
