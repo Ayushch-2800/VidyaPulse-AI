@@ -18,9 +18,9 @@ const seekButtonStyle: React.CSSProperties = {
   margin: "0 2px",
   padding: "1px 8px",
   borderRadius: "999px",
-  border: "1px solid #0070f3",
-  backgroundColor: "#EFF6FF",
-  color: "#0070f3",
+  border: "1px solid var(--vp-seek-border)",
+  backgroundColor: "var(--vp-seek-bg)",
+  color: "var(--vp-seek-text)",
   fontSize: "0.85em",
   fontVariantNumeric: "tabular-nums",
   cursor: "pointer",
@@ -80,7 +80,7 @@ export default function CitedAnswer({
 }) {
   if (answer.trim() === NOT_COVERED) {
     return (
-      <p style={{ margin: 0, color: "#6B7280", fontStyle: "italic" }}>
+      <p style={{ margin: 0, color: "var(--vp-muted)", fontStyle: "italic" }}>
         {NOT_COVERED}
       </p>
     );
@@ -126,7 +126,7 @@ export default function CitedAnswer({
             gap: "6px",
             marginTop: "8px",
             fontSize: "0.9em",
-            color: "#6B7280",
+            color: "var(--vp-muted)",
           }}
         >
           <span>Sources:</span>
