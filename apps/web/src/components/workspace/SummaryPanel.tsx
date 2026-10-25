@@ -30,7 +30,13 @@ export default function SummaryPanel({
   const translation = useTranslation([answer], active);
 
   return (
-    <ArtifactFrame artifact={artifact} name="summary" wait="up to a minute">
+    <ArtifactFrame
+      artifact={artifact}
+      name="summary"
+      wait="under a minute"
+      slowAfterSeconds={60}
+      slowNote="Gemini's free tier is slow right now, so the backend tries a faster model after a minute and keeps trying for up to about three minutes. You can use the other tabs meanwhile."
+    >
       {(row) => (
         <>
           <TranslationNote translation={translation} />

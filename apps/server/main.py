@@ -55,13 +55,15 @@ from embedding_engine import index_multimodal_chunks
 
 from auth import get_current_user
 from storage_utils import supabase
-from query_router import hybrid_intelligent_router
+from query_router import classify_intent, hybrid_intelligent_router
 from synthesizer import synthesize_answer
 from cheat_sheet_engine import generate_cheat_sheet
 from study_artifacts_engine import (
+    cached_summary,
     generate_study_set,
     generate_summary,
     lecture_owner_id,
+    summary_running,
 )
 from translator import LANGUAGES, MAX_TEXTS_PER_REQUEST, translate_texts
 from media_validator import (
@@ -545,8 +547,24 @@ def chat_ask(payload: ChatAskRequest):
     """
     Task 14: Grounded LLM Synthesizer. Returns a cited answer with [MM:SS] deep-links.
     Declared as a sync route so FastAPI runs the blocking Gemini call in its threadpool.
+    A summary question is answered from the stored summary when there is one, with no Gemini call.
     """
     try:
+        if classify_intent(payload.query) == "overview":
+            stored = cached_summary(payload.lecture_id)
+            if stored:
+                print(
+                    "[SUMMARY] Answering a summary question with the stored summary (no Gemini call).",
+                    flush=True,
+                )
+                return {
+                    "query": payload.query,
+                    "intent": "overview",
+                    "grounded": True,
+                    "sources": [],
+                    "cached": True,
+                    **stored,
+                }
         return synthesize_answer(payload.query, payload.lecture_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -629,16 +647,18 @@ def regenerate_study_artifacts(lecture_id: str, background_tasks: BackgroundTask
     return {"status": "queued", "lecture_id": lecture_id}
 
 
-@app.post("/lectures/{lecture_id}/summary")
-def regenerate_summary(lecture_id: str):
+@app.post("/lectures/{lecture_id}/summary", status_code=status.HTTP_202_ACCEPTED)
+def regenerate_summary(lecture_id: str, background_tasks: BackgroundTasks):
     """
-    Task 18: Writes (or rewrites) the lecture summary and returns it. One Gemini call, so it
-    answers in the request like /chat/ask; a sync route keeps it in FastAPI's threadpool.
+    Task 18: Queues (re)writing the lecture summary in the background, like the cheat sheet and
+    study set; the workspace polls GET /study-artifacts for it. On a slow free tier this can take
+    a few minutes, which is too long to hold a request open. A summary already being written is
+    not started twice.
     """
-    result = generate_summary(lecture_id)
-    if result["status"] != "completed":
-        raise HTTPException(status_code=500, detail=result["error"])
-    return result
+    if summary_running(lecture_id):
+        return {"status": "processing", "lecture_id": lecture_id}
+    background_tasks.add_task(generate_summary, lecture_id)
+    return {"status": "queued", "lecture_id": lecture_id}
 
 
 @app.post("/translate")

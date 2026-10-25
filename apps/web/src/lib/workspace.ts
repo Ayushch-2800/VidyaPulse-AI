@@ -89,6 +89,8 @@ export type ArtifactRow<T> = {
   content: T;
   error: string | null;
   updated_at: string;
+  /** The Gemini model that wrote it; the summary may come from the faster fallback model. */
+  model?: string | null;
   topic_tags?: LectureTopicTag[];
 };
 
@@ -143,12 +145,47 @@ const POST_PATH: Record<ArtifactKind, string> = {
   quiz: "study-artifacts",
 };
 
-const POLL_MS = 5000;
-// Stop polling after 20 minutes; a job still "processing" by then has died with the server
-const MAX_POLLS = 240;
+// Check soon after Generate, then less and less often: 3s, 4.5s, 6.8s, ... up to every 30s
+const FIRST_POLL_MS = 3000;
+const MAX_POLL_MS = 30000;
+const POLL_BACKOFF = 1.5;
+// A job still "processing" this long after it started has died with the server
+export const STALL_MINUTES = 20;
 
 function isBusy(row: ArtifactRow<unknown> | null): boolean {
   return row?.status === "pending" || row?.status === "processing";
+}
+
+export function pollDelay(polls: number): number {
+  return Math.min(MAX_POLL_MS, FIRST_POLL_MS * POLL_BACKOFF ** polls);
+}
+
+/** False while the browser tab is in the background, so polling can pause. */
+function usePageVisible(): boolean {
+  const [visible, setVisible] = useState(true);
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  return visible;
+}
+
+/** Whole seconds since `since` (epoch ms), ticking once a second; null when `since` is null. */
+export function useElapsedSeconds(since: number | null): number | null {
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    if (since === null) return;
+    const update = () => setNow(Date.now());
+    const first = window.setTimeout(update, 0);
+    const timer = window.setInterval(update, 1000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [since]);
+  if (since === null || now === null) return null;
+  return Math.max(0, Math.floor((now - since) / 1000));
 }
 
 export type Artifact<T> = {
@@ -156,6 +193,8 @@ export type Artifact<T> = {
   loading: boolean;
   error: string | null;
   generating: boolean;
+  /** When the running generation started (epoch ms), for an elapsed-time display. */
+  startedAt: number | null;
   stalled: boolean;
   generate: () => void;
   reload: () => void;
@@ -163,7 +202,8 @@ export type Artifact<T> = {
 
 /**
  * Loads a lecture's cheat sheet, summary, flashcards or quiz. generate() asks the backend to
- * (re)build it, and the hook polls every 5s while the backend reports it as in progress.
+ * (re)build it, and while the backend reports it as in progress the hook polls with backoff:
+ * after 3s, then less often up to every 30s, and not at all while the browser tab is hidden.
  * It fetches only while `active` (its panel is on screen), and again each time it is shown,
  * so the quiz picks up a study set generated from the flashcards panel.
  */
@@ -175,12 +215,16 @@ export function useArtifact<T>(
   const [result, setResult] = useState<{
     row: ArtifactRow<T> | null;
     error: string | null;
+    /** When this response arrived (epoch ms) */
+    at: number;
   } | null>(null);
   const [tick, setTick] = useState(0);
   const [polls, setPolls] = useState(0);
   // updated_at of the row on screen when Generate was pressed; null when not waiting
   const [waitingFor, setWaitingFor] = useState<string | null>(null);
+  const [requestedAt, setRequestedAt] = useState<number | null>(null);
   const [postError, setPostError] = useState<string | null>(null);
+  const visible = usePageVisible();
 
   useEffect(() => {
     if (!active) return;
@@ -191,17 +235,22 @@ export function useArtifact<T>(
       .then((data) => {
         const row = kind === "cheatsheet" ? data : data[kind];
         if (!cancelled)
-          setResult({ row: (row as ArtifactRow<T>) ?? null, error: null });
+          setResult({
+            row: (row as ArtifactRow<T>) ?? null,
+            error: null,
+            at: Date.now(),
+          });
       })
       .catch((err) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 404) {
-          setResult({ row: null, error: null });
+          setResult({ row: null, error: null, at: Date.now() });
         } else {
           // A failed poll keeps what is already on screen
           setResult((prev) => ({
             row: prev?.row ?? null,
             error: errorMessage(err),
+            at: Date.now(),
           }));
         }
       });
@@ -212,21 +261,33 @@ export function useArtifact<T>(
 
   const row = result?.row ?? null;
   const fresh = row !== null && row.updated_at !== waitingFor && !isBusy(row);
-  const generating = (waitingFor !== null && !fresh) || isBusy(row);
-  const stalled = generating && polls >= MAX_POLLS;
+  const busy = isBusy(row);
+  const generating = (waitingFor !== null && !fresh) || busy;
+  // The backend stamps updated_at when it starts; before that, use when Generate was pressed
+  const startedAt = !generating
+    ? null
+    : busy && row && row.updated_at !== waitingFor
+      ? Date.parse(row.updated_at)
+      : requestedAt;
+  const stalled =
+    generating &&
+    startedAt !== null &&
+    result !== null &&
+    result.at - startedAt > STALL_MINUTES * 60 * 1000;
 
   useEffect(() => {
-    if (!active || !generating || stalled) return;
+    if (!active || !visible || !generating || stalled) return;
     const timer = window.setTimeout(() => {
       setPolls((n) => n + 1);
       setTick((t) => t + 1);
-    }, POLL_MS);
+    }, pollDelay(polls));
     return () => window.clearTimeout(timer);
-  }, [active, generating, stalled, tick]);
+  }, [active, visible, generating, stalled, polls, tick]);
 
   const rowUpdatedAt = row?.updated_at ?? "";
   const generate = useCallback(() => {
     setWaitingFor(rowUpdatedAt);
+    setRequestedAt(Date.now());
     setPostError(null);
     setPolls(0);
     apiFetch(`/lectures/${encodeURIComponent(lectureId)}/${POST_PATH[kind]}`, {
@@ -246,6 +307,7 @@ export function useArtifact<T>(
     loading: result === null,
     error: postError ?? result?.error ?? null,
     generating,
+    startedAt,
     stalled,
     generate,
     reload,
