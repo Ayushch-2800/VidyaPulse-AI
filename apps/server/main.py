@@ -143,6 +143,7 @@ class IngestYouTubeRequest(BaseModel):
 
 class FinalizeStreamRequest(BaseModel):
     session_id: str
+    title: Optional[str] = None
 
 
 class TranslateRequest(BaseModel):
@@ -258,6 +259,93 @@ def process_ingestion_pipeline(
                 os.remove(original_file_path)
             except OSError:
                 pass
+
+
+def process_stream_recording(lecture_id: str, recording_path: str, bucket_path: str):
+    """
+    Turns a joined Chrome Extension recording into a lecture, like a YouTube lecture without
+    the slide reading: MP3 for the player, Whisper, timed chunks, embeddings, then the cheat
+    sheet, study set and summary.
+    """
+    from asr_engine import transcribe_multilingual_audio
+
+    mp3_path = None
+    try:
+        # 64 kbps mono keeps an hour of speech near 29 MB, under Supabase's 50 MB upload limit
+        mp3_path = convert_to_mp3_if_needed(recording_path, bitrate="64k", mono=True)
+        try:
+            with open(mp3_path, "rb") as f:
+                supabase.storage.from_("lectures").upload(
+                    path=bucket_path,
+                    file=f,
+                    file_options={"content-type": "audio/mpeg", "upsert": "true"},
+                )
+        except Exception as e:
+            # Not fatal: the lecture still gets its transcript and study tools, just no player
+            print(f"[STREAM] Could not store the recording's audio: {e}", flush=True)
+            supabase.table("lectures").update({"media_bucket_path": None}).eq(
+                "id", lecture_id
+            ).execute()
+
+        asr_result = transcribe_multilingual_audio(
+            file_path=mp3_path, language_code="unknown", mode="codemix"
+        )
+        segments = asr_result["segments"]
+        detected_lang = asr_result["detected_language"]
+
+        chunks = align_multimodal_chunks(
+            transcript_segments=segments,
+            keyframes_data=[],
+            lecture_id=lecture_id,
+            window_size=300,
+            overlap_size=50,
+            language=detected_lang,
+        )
+        indexed = index_multimodal_chunks(chunks=chunks, lecture_id=lecture_id)
+        if not indexed and segments:
+            # Embeddings need Gemini. Keep the Whisper transcript so the workspace still shows it
+            print(
+                f"[STREAM] Embeddings failed for {lecture_id}; saved the transcript only.",
+                flush=True,
+            )
+            supabase.table("transcript_chunks").insert(
+                [
+                    {
+                        "lecture_id": lecture_id,
+                        "chunk_index": index,
+                        "text_content": segment["text"],
+                        "start_time": segment["start_time_seconds"],
+                        "end_time": segment["end_time_seconds"],
+                        "language": detected_lang,
+                    }
+                    for index, segment in enumerate(segments)
+                ]
+            ).execute()
+
+        supabase.table("lectures").update(
+            {"status": "completed", "language": detected_lang}
+        ).eq("id", lecture_id).execute()
+        print(f"[STREAM] Lecture {lecture_id} is ready.", flush=True)
+
+        if indexed:
+            # One Gemini job at a time, in the same order as a YouTube lecture
+            generate_cheat_sheet(lecture_id)
+            generate_study_set(lecture_id)
+            generate_summary(lecture_id)
+
+    except Exception as e:
+        supabase.table("lectures").update({"status": "failed"}).eq(
+            "id", lecture_id
+        ).execute()
+        print(f"[STREAM PIPELINE ERROR]: {e}", flush=True)
+
+    finally:
+        for path in (recording_path, mp3_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 @app.post("/ingest/youtube")
@@ -488,7 +576,8 @@ async def upload_audio_chunk(file: UploadFile = File(...)):
     Receives audio chunks from the Chrome Extension.
     """
     try:
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        # basename keeps a crafted name like "../main.py" inside temp_chunks
+        file_path = os.path.join(UPLOAD_DIR, os.path.basename(file.filename or ""))
 
         with open(file_path, "wb") as f:
             content = await file.read()
@@ -509,30 +598,77 @@ async def upload_audio_chunk(file: UploadFile = File(...)):
 
 
 @app.post("/ingest/finalize-stream")
-async def finalize_stream(payload: FinalizeStreamRequest):
+def finalize_stream(payload: FinalizeStreamRequest, background_tasks: BackgroundTasks):
     """
-    Finalizes a stream recording session triggered by the Chrome Extension.
-    Matches uploaded chunks in `temp_chunks` for the session_id.
+    Turns a Chrome Extension recording into a lecture and returns its lecture_id at once;
+    transcription and the study tools run in the background.
+    The extension uploads one recording as 30-second WebM pieces named chunk-<session>-<n>.webm.
+    Only the first piece has the WebM header, so they are joined in order, not read one by one.
     """
-    try:
-        session_id = payload.session_id
-        matching_chunks = [
-            f for f in os.listdir(UPLOAD_DIR) if session_id in f and f.endswith(".webm")
-        ]
+    # Active Supabase User UUID for local dev testing, as in the other ingest routes
+    user_id = "74a53efe-4184-4c33-bffa-ab99456c5ffb"
 
-        print(
-            f"🏁 Finalizing stream session '{session_id}'. Chunks received: {len(matching_chunks)}"
+    session_id = os.path.basename(payload.session_id)
+    prefix = f"chunk-{session_id}-"
+    chunk_names = sorted(
+        f
+        for f in os.listdir(UPLOAD_DIR)
+        if f.startswith(prefix) and f.endswith(".webm")
+    )
+    print(
+        f"🏁 Finalizing stream session '{session_id}'. Chunks received: {len(chunk_names)}"
+    )
+    if not chunk_names:
+        raise HTTPException(
+            status_code=404, detail="No audio was received for this recording."
         )
 
-        return {
-            "status": "completed",
-            "session_id": session_id,
-            "chunks_found": len(matching_chunks),
-            "message": "Stream finalized successfully.",
-        }
+    # Join and remove the pieces now, so finalizing the same session twice makes one lecture
+    recording_path = os.path.join(UPLOAD_DIR, f"{session_id}.webm")
+    try:
+        with open(recording_path, "wb") as out:
+            for name in chunk_names:
+                with open(os.path.join(UPLOAD_DIR, name), "rb") as piece:
+                    out.write(piece.read())
+        for name in chunk_names:
+            os.remove(os.path.join(UPLOAD_DIR, name))
+
+        title = (payload.title or "").strip() or (
+            f"Live class recording, {datetime.now():%d %b %Y %H:%M}"
+        )
+        bucket_path = f"{user_id}/{uuid.uuid4()}.mp3"
+        res = (
+            supabase.table("lectures")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "title": title,
+                    "source_type": "file_upload",
+                    "source_url": bucket_path,
+                    "media_bucket_path": bucket_path,
+                    "status": "processing",
+                }
+            )
+            .execute()
+        )
+        if not res.data:
+            raise RuntimeError("Failed to insert lecture record into Supabase.")
+        lecture_id = res.data[0]["id"]
     except Exception as e:
         print(f"❌ Error finalizing stream session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    background_tasks.add_task(
+        process_stream_recording, lecture_id, recording_path, bucket_path
+    )
+    return {
+        "status": "queued",
+        "session_id": session_id,
+        "lecture_id": lecture_id,
+        "title": title,
+        "chunks_found": len(chunk_names),
+        "message": "Recording saved. Transcription started in background.",
+    }
 
 
 @app.post("/test/router")
