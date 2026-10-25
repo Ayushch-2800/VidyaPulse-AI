@@ -3,6 +3,8 @@ import time
 from PIL import Image
 from typing import Dict, Any
 
+from gemini_utils import CHAT_MODEL
+
 
 # The client automatically picks up GEMINI_API_KEY from the environment
 # Make sure it is loaded via dotenv or exported in the terminal
@@ -13,7 +15,8 @@ def extract_visual_data(image_path: str, timestamp: float) -> Dict[str, Any]:
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Keyframe not found at {image_path}")
 
-    from google import genai  # Imported here so loading this module makes no Gemini setup
+    # Imported here so loading this module makes no Gemini setup
+    from google import genai
 
     img = Image.open(image_path)
     client = genai.Client()
@@ -34,9 +37,9 @@ def extract_visual_data(image_path: str, timestamp: float) -> Dict[str, Any]:
 
     for attempt in range(max_retries):
         try:
-            # Update model to 3.8-flash based on API requirements
+            # Same model as the chat engines, set with GEMINI_CHAT_MODEL
             response = client.models.generate_content(
-                model="gemini-3.8-flash", contents=[prompt, img]
+                model=CHAT_MODEL, contents=[prompt, img]
             )
             extracted_text = response.text.strip()
             break  # Success, exit the retry loop

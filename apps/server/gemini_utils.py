@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 SERVER_DIR = Path(__file__).resolve().parent
 
-CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
+CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
 MAX_RETRIES = 5
 # 6s between generation calls is ~10 requests/minute, under the Flash free-tier RPM limit
@@ -72,7 +72,10 @@ def preload(tag: str) -> None:
 
     steps = (
         ("Creating Supabase client", get_supabase),
-        ("Loading the google-genai SDK", lambda: importlib.import_module("google.genai")),
+        (
+            "Loading the google-genai SDK",
+            lambda: importlib.import_module("google.genai"),
+        ),
         ("Loading and configuring the Gemini embedding SDK", get_genai),
     )
     log(
@@ -82,7 +85,9 @@ def preload(tag: str) -> None:
     for label, step in steps:
         log(tag, f"{label}...")
         started = time.monotonic()
-        faulthandler.dump_traceback_later(STARTUP_TIMEOUT_SECONDS, exit=True, file=sys.stderr)
+        faulthandler.dump_traceback_later(
+            STARTUP_TIMEOUT_SECONDS, exit=True, file=sys.stderr
+        )
         try:
             step()
         finally:
