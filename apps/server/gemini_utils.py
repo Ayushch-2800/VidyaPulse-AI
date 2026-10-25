@@ -20,7 +20,11 @@ from pydantic import BaseModel
 SERVER_DIR = Path(__file__).resolve().parent
 
 CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
-REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
+# google-genai also sends this to Gemini as the server-side deadline (X-Server-Timeout),
+# so a slow answer comes back as 504 DEADLINE_EXCEEDED once it runs past it
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "120"))
+# How long the model "thinks" before answering; lower is faster. Empty uses the model default.
+THINKING_LEVEL = os.getenv("GEMINI_THINKING_LEVEL", "low").strip()
 MAX_RETRIES = 5
 # 6s between generation calls is ~10 requests/minute, under the Flash free-tier RPM limit
 MIN_SECONDS_BETWEEN_CALLS = float(os.getenv("GEMINI_MIN_SECONDS_BETWEEN_CALLS", "6"))
@@ -166,6 +170,21 @@ def _get_client():
     return _client
 
 
+def base_config_options() -> dict:
+    """Options every generation call shares: no AFC, and a low thinking level for speed."""
+    from google.genai import types
+
+    options = {"automatic_function_calling": no_afc_config()}
+    if THINKING_LEVEL:
+        options["thinking_config"] = types.ThinkingConfig(thinking_level=THINKING_LEVEL)
+    return options
+
+
+def is_thinking_config_error(error: Exception) -> bool:
+    text = str(error)
+    return ("400" in text or "INVALID_ARGUMENT" in text) and "thinking" in text.lower()
+
+
 def no_afc_config():
     """
     We never pass tools, but some google-genai versions still run their automatic
@@ -191,7 +210,8 @@ def _generate(
         started = time.monotonic()
         log(
             tag,
-            f"Calling {CHAT_MODEL} (attempt {attempt}, timeout {REQUEST_TIMEOUT_SECONDS}s)...",
+            f"Calling {CHAT_MODEL} with a {len(prompt):,}-char prompt "
+            f"(attempt {attempt}, timeout {REQUEST_TIMEOUT_SECONDS}s)...",
         )
         try:
             response = client.models.generate_content(
@@ -206,6 +226,14 @@ def _generate(
                     f"Gemini has no model named {CHAT_MODEL!r}. Set GEMINI_CHAT_MODEL in "
                     f"{SERVER_DIR / '.env'} to a model your key can use. Gemini said: {e}"
                 ) from e
+            # Older models reject thinking_level: drop it and try again right away
+            if getattr(config, "thinking_config", None) and is_thinking_config_error(e):
+                log(
+                    tag,
+                    f"{CHAT_MODEL} rejected the thinking level; retrying without it.",
+                )
+                config = config.model_copy(update={"thinking_config": None})
+                continue
             _backoff_or_raise(tag, e, attempt, max_retries)
     raise RuntimeError("Gemini returned no response.")
 
@@ -224,7 +252,7 @@ def generate_text(
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
         temperature=temperature,
-        automatic_function_calling=no_afc_config(),
+        **base_config_options(),
     )
     response = _generate(prompt, config, tag, pace, max_retries)
     return (response.text or "").strip()
@@ -245,7 +273,7 @@ def generate_structured(
         temperature=temperature,
         response_mime_type="application/json",
         response_schema=schema,
-        automatic_function_calling=no_afc_config(),
+        **base_config_options(),
     )
     response = _generate(prompt, config, tag, pace=True, max_retries=MAX_RETRIES)
     if isinstance(response.parsed, schema):

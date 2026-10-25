@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,6 +14,36 @@ if (existsSync(strayAppDir) && existsSync(join(__dirname, "src", "app"))) {
   );
 }
 
-const nextConfig: NextConfig = {/* config options here */};
+function git(args: string): string {
+  try {
+    return execSync(`git ${args}`, {
+      cwd: __dirname,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+// Stamped into the page footer and the dev server log, so it is obvious which
+// checkout and commit is being served
+const commit = git("rev-parse --short HEAD") || "unknown";
+const dirty = git("status --porcelain -- .")
+  ? " (with uncommitted changes)"
+  : "";
+const startedAt = new Date().toISOString();
+console.log(
+  `[web] Serving ${__dirname} at commit ${commit}${dirty}, started ${startedAt}`,
+);
+
+const nextConfig: NextConfig = {
+  env: {
+    NEXT_PUBLIC_BUILD_COMMIT: commit + dirty,
+    NEXT_PUBLIC_BUILD_DIR: __dirname,
+    NEXT_PUBLIC_BUILD_TIME: startedAt,
+  },
+};
 
 export default nextConfig;
