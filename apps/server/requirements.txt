@@ -35,6 +35,7 @@ PyJWT==2.14.0
 python-dotenv==1.2.3
 pytokens==0.4.1
 realtime==2.31.0
+redis==8.1.0
 requests==2.34.2
 SQLAlchemy==2.0.54
 starlette==1.6.0

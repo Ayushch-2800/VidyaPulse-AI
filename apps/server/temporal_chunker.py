@@ -11,14 +11,16 @@ def interpolate_word_timestamps(
     """
     words_with_timing = []
 
-    for segment in transcript_segments:
-        text = segment.get("text", "").strip()
+    def segment_start(segment: Dict[str, Any]) -> float:
+        return float(segment.get("start_time_seconds", segment.get("start_time", 0.0)))
+
+    # Whisper emits segments in order, but a merged or retried transcript may not be
+    for segment in sorted(transcript_segments, key=segment_start):
+        text = (segment.get("text") or "").strip()
         if not text:
             continue
 
-        start_time = float(
-            segment.get("start_time_seconds", segment.get("start_time", 0.0))
-        )
+        start_time = segment_start(segment)
         end_time = float(
             segment.get("end_time_seconds", segment.get("end_time", start_time))
         )
@@ -45,6 +47,59 @@ def interpolate_word_timestamps(
     return words_with_timing
 
 
+def keyframe_timestamp(keyframe: Dict[str, Any]) -> float:
+    return float(keyframe.get("timestamp_seconds", keyframe.get("timestamp", 0.0)))
+
+
+def keyframe_text(keyframe: Dict[str, Any]) -> str:
+    return (
+        keyframe.get("extracted_text", keyframe.get("extracted_content", "")) or ""
+    ).strip()
+
+
+def visual_only_chunks(
+    keyframes_data: List[Dict[str, Any]], lecture_id: str, language: str
+) -> List[Dict[str, Any]]:
+    """
+    Task 19: When Whisper finds no speech (silent or music-only audio, or audio too noisy to
+    transcribe) the slides are still worth searching. One chunk per slide with text, covering
+    the time until the next slide.
+    """
+    slides = sorted(
+        (kf for kf in keyframes_data if keyframe_text(kf)), key=keyframe_timestamp
+    )
+    chunks = []
+    for index, kf in enumerate(slides):
+        start = keyframe_timestamp(kf)
+        end = (
+            keyframe_timestamp(slides[index + 1]) if index + 1 < len(slides) else start
+        )
+        visual = {
+            "timestamp_seconds": start,
+            "storage_path": kf.get("storage_path", ""),
+            "ocr_content": keyframe_text(kf),
+        }
+        chunks.append(
+            {
+                "chunk_index": index,
+                "lecture_id": lecture_id,
+                "start_time_seconds": start,
+                "end_time_seconds": end,
+                "duration_seconds": round(end - start, 2),
+                "word_count": 0,
+                "transcript_text": "",
+                "visual_contexts": [visual],
+                "visual_context_count": 1,
+                "language": language,
+                "composite_content": (
+                    f"### Visual Blackboard / Slide Context ({start:.1f}s - {end:.1f}s):\n"
+                    f"[Visual at {start:.1f}s]:\n{visual['ocr_content']}"
+                ),
+            }
+        )
+    return chunks
+
+
 def align_multimodal_chunks(
     transcript_segments: List[Dict[str, Any]],
     keyframes_data: List[Dict[str, Any]],
@@ -60,7 +115,7 @@ def align_multimodal_chunks(
     """
     words = interpolate_word_timestamps(transcript_segments)
     if not words:
-        return []
+        return visual_only_chunks(keyframes_data, lecture_id, language)
 
     stride = max(1, window_size - overlap_size)
     unified_chunks = []
@@ -81,9 +136,7 @@ def align_multimodal_chunks(
         matched_keyframes = [
             kf
             for kf in keyframes_data
-            if window_start_time
-            <= float(kf.get("timestamp_seconds", kf.get("timestamp", 0.0)))
-            <= window_end_time
+            if window_start_time <= keyframe_timestamp(kf) <= window_end_time
         ]
 
         # Structure visual context payloads
@@ -91,11 +144,9 @@ def align_multimodal_chunks(
         visual_texts_for_embedding = []
 
         for kf in matched_keyframes:
-            ts = float(kf.get("timestamp_seconds", kf.get("timestamp", 0.0)))
+            ts = keyframe_timestamp(kf)
             storage_path = kf.get("storage_path", "")
-            ocr_content = kf.get(
-                "extracted_text", kf.get("extracted_content", "")
-            ).strip()
+            ocr_content = keyframe_text(kf)
 
             visual_contexts.append(
                 {

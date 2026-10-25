@@ -9,6 +9,7 @@
   "scripts": {
     "dev:web": "npm run dev --workspace=apps/web",
     "build:web": "npm run build --workspace=apps/web",
+    "test:server": "cd apps/server && source venv/bin/activate && pytest --cov",
     "format": "prettier --write . && cd apps/server && source venv/bin/activate && black .",
     "prepare": "husky"
   },

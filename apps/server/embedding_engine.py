@@ -1,5 +1,7 @@
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+import cache
 from storage_utils import supabase
 
 # Fixed model name, no catalog lookup: listing models was a network call at import time that
@@ -7,6 +9,10 @@ from storage_utils import supabase
 # model that supports output_dimensionality=1536. Override if your chunks used another model.
 VALID_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
 EMBED_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
+EMBEDDING_DIMENSIONS = 1536
+# Rows per Supabase insert: each row carries a 1536-d vector (~20 KB of JSON), so a 4-hour
+# lecture's ~150 chunks go up in a few requests instead of one multi-megabyte body
+INSERT_BATCH_SIZE = 50
 
 _genai = None
 
@@ -39,7 +45,7 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
             model=VALID_MODEL,
             content=texts,
             task_type="semantic_similarity",
-            output_dimensionality=1536,  # <-- Forces Gemini to match your Supabase table size
+            output_dimensionality=EMBEDDING_DIMENSIONS,  # <-- Forces Gemini to match your Supabase table size
             request_options={
                 "timeout": EMBED_TIMEOUT_SECONDS,
                 # Retry 429/503 briefly, but never wait more than 2 minutes in total
@@ -53,6 +59,22 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
     except Exception as e:
         print(f"[EMBEDDING ERROR]: {e}")
         return []
+
+
+def embed_query(text: str) -> Optional[List[float]]:
+    """
+    Task 19: The 1536-d vector for a student's question. Repeat questions (any case or spacing)
+    come from the cache instead of Gemini. None if Gemini failed; failures are never cached.
+    """
+    key = f"embedding:{VALID_MODEL}:{EMBEDDING_DIMENSIONS}:{cache.text_hash(text)}"
+    vector = cache.get_json(key)
+    if vector is not None:
+        return vector
+    embeddings = generate_embeddings([text])
+    if not embeddings or len(embeddings[0]) != EMBEDDING_DIMENSIONS:
+        return None
+    cache.set_json(key, embeddings[0], cache.EMBEDDING_TTL_SECONDS)
+    return embeddings[0]
 
 
 def index_multimodal_chunks(chunks: List[Dict[str, Any]], lecture_id: str) -> bool:
@@ -97,17 +119,26 @@ def index_multimodal_chunks(chunks: List[Dict[str, Any]], lecture_id: str) -> bo
             }
         )
 
-    # 4. Execute Bulk Insert to Supabase PostgreSQL
+    # 4. Execute Bulk Insert to Supabase PostgreSQL, a batch at a time
     print(
         "[EMBEDDING PIPELINE]: Pushing vectors and metadata to Supabase 'multimodal_chunks' table..."
     )
-    response = supabase.table("multimodal_chunks").insert(db_payload).execute()
-
-    if hasattr(response, "data") and response.data:
-        print(
-            f"[EMBEDDING PIPELINE]: Successfully indexed {len(response.data)} vectorized chunks."
+    saved = 0
+    for start in range(0, len(db_payload), INSERT_BATCH_SIZE):
+        response = (
+            supabase.table("multimodal_chunks")
+            .insert(db_payload[start : start + INSERT_BATCH_SIZE])
+            .execute()
         )
+        saved += len(getattr(response, "data", None) or [])
+
+    # New chunks make any cached search or answer for this lecture stale
+    cache.invalidate_lecture(lecture_id)
+
+    if saved == len(db_payload):
+        print(f"[EMBEDDING PIPELINE]: Successfully indexed {saved} vectorized chunks.")
         return True
-    else:
-        print("[EMBEDDING PIPELINE]: Warning - Insert executed but no data returned.")
-        return False
+    print(
+        f"[EMBEDDING PIPELINE]: Warning - only {saved} of {len(db_payload)} chunks were saved."
+    )
+    return False
