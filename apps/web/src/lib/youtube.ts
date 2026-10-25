@@ -44,4 +44,12 @@ export function loadYouTubeApi(): Promise<YouTubeNamespace> {
   return apiPromise;
 }
 
+/** A link that opens the YouTube video at `seconds`, or null for a non-YouTube URL. */
+export function youTubeTimeUrl(url: string, seconds: number): string | null {
+  const id = extractYouTubeId(url);
+  return id
+    ? `https://www.youtube.com/watch?v=${id}&t=${Math.floor(seconds)}s`
+    : null;
+}
+
 export type { YouTubePlayer };

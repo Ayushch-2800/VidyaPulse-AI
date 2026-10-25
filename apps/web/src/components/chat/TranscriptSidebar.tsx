@@ -3,18 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import { API_URL } from "@/lib/api";
+import { formatTimestamp } from "@/lib/workspace";
 
 export type TranscriptSegment = { start: number; end: number; text: string };
 
 // After the user scrolls the panel themselves, leave it alone for this long
 const MANUAL_SCROLL_PAUSE_MS = 4000;
-
-function formatTimestamp(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const mm = String(Math.floor(total / 60)).padStart(2, "0");
-  const ss = String(total % 60).padStart(2, "0");
-  return `${mm}:${ss}`;
-}
 
 /**
  * Index of the segment playing at `time`: the last one that has started.
@@ -111,6 +105,8 @@ export default function TranscriptSidebar({
         border: "1px solid #E5E7EB",
         borderRadius: "8px",
         backgroundColor: "#fff",
+        // Set explicitly: in dark mode the inherited text colour is near-white
+        color: "#111827",
         minHeight: 0,
         height: "100%",
       }}
