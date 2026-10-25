@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-
 import CitedAnswer, { SeekButton } from "@/components/chat/CitedAnswer";
 import { useTranslation } from "@/lib/translate";
 import {
@@ -10,12 +8,15 @@ import {
   type Flashcard,
   type NewNote,
 } from "@/lib/workspace";
+import { usePersistentState } from "@/lib/workspaceState";
 
 import ArtifactFrame from "./ArtifactFrame";
 import InlineMath from "./InlineMath";
 import SaveNoteButton from "./SaveNoteButton";
 import TranslationNote from "./TranslationNote";
 import { itemStyle, mutedText, primaryButton, secondaryButton } from "./styles";
+
+const START = { index: 0, revealed: false };
 
 /** The Task 16 flashcards, one at a time: read the question, recall, then reveal. */
 export default function FlashcardsPanel({
@@ -37,13 +38,15 @@ export default function FlashcardsPanel({
     active,
   );
   const { t } = translation;
-  const [index, setIndex] = useState(0);
-  const [revealed, setRevealed] = useState(false);
+  // Where the student is in this version of the deck, kept when they leave the workspace
+  const [{ index, revealed }, setProgress] = usePersistentState(
+    artifact.row?.status === "completed"
+      ? `flashcards:${lectureId}:${artifact.row.updated_at}`
+      : null,
+    START,
+  );
 
-  const go = (next: number) => {
-    setIndex(next);
-    setRevealed(false);
-  };
+  const go = (next: number) => setProgress({ index: next, revealed: false });
 
   return (
     <ArtifactFrame
@@ -113,7 +116,7 @@ export default function FlashcardsPanel({
               ) : (
                 <button
                   type="button"
-                  onClick={() => setRevealed(true)}
+                  onClick={() => setProgress({ index, revealed: true })}
                   style={primaryButton}
                 >
                   Show answer

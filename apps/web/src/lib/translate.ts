@@ -85,13 +85,54 @@ export function useLanguagePreference(): LanguageCode {
 
 export const LanguageContext = createContext<LanguageCode>(SOURCE_LANGUAGE);
 
-// ---- Translations, cached for the page's lifetime (the backend also caches them in Supabase) ----
+// ---- Translations, cached in this browser (the backend also caches them in Supabase) ----
 
 const translations = new Map<string, string>();
 const inflight = new Map<string, Promise<void>>();
+// Kept in localStorage so a language opens instantly on later visits, up to about this many
+// characters; the oldest translations are dropped first
+const TRANSLATIONS_KEY = "vidyapulse-translations";
+const MAX_SAVED_CHARS = 1_500_000;
+let restored = false;
+let saveTimer: number | undefined;
 
 function cacheKey(language: string, text: string): string {
   return `${language}\u0000${text}`;
+}
+
+function restoreTranslations() {
+  if (restored || typeof window === "undefined") return;
+  restored = true;
+  try {
+    const saved = window.localStorage.getItem(TRANSLATIONS_KEY);
+    if (!saved) return;
+    for (const [key, value] of JSON.parse(saved) as [string, string][]) {
+      if (!translations.has(key)) translations.set(key, value);
+    }
+  } catch {
+    // Unreadable or blocked: translations load from the backend instead
+  }
+}
+
+function saveTranslations() {
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    const entries = [...translations];
+    let size = entries.reduce((n, [k, v]) => n + k.length + v.length, 0);
+    let drop = 0;
+    while (size > MAX_SAVED_CHARS && drop < entries.length) {
+      size -= entries[drop][0].length + entries[drop][1].length;
+      drop++;
+    }
+    try {
+      window.localStorage.setItem(
+        TRANSLATIONS_KEY,
+        JSON.stringify(entries.slice(drop)),
+      );
+    } catch {
+      // Storage full or blocked: still cached for this visit
+    }
+  }, 1000);
 }
 
 async function fetchTranslations(language: LanguageCode, texts: string[]) {
@@ -105,6 +146,7 @@ async function fetchTranslations(language: LanguageCode, texts: string[]) {
       translations.set(cacheKey(language, batch[i]), translated),
     );
   }
+  saveTranslations();
 }
 
 /** One request per distinct set of texts, however many components ask for it at once. */
@@ -135,6 +177,7 @@ export type Translation = {
  */
 export function useTranslation(texts: string[], enabled = true): Translation {
   const language = useContext(LanguageContext);
+  restoreTranslations();
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const [failure, setFailure] = useState<{
     key: string;

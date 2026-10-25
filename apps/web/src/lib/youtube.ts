@@ -17,7 +17,12 @@ type YouTubePlayer = {
 type YouTubeNamespace = {
   Player: new (
     element: HTMLElement,
-    options: { videoId: string; width?: string; height?: string },
+    options: {
+      videoId: string;
+      width?: string;
+      height?: string;
+      playerVars?: { start?: number };
+    },
   ) => YouTubePlayer;
 };
 

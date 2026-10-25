@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-
 import CitedAnswer, { SeekButton } from "@/components/chat/CitedAnswer";
 import { useTranslation } from "@/lib/translate";
 import {
@@ -9,6 +7,7 @@ import {
   useArtifact,
   type QuizQuestion,
 } from "@/lib/workspace";
+import { usePersistentState } from "@/lib/workspaceState";
 
 import ArtifactFrame from "./ArtifactFrame";
 import InlineMath from "./InlineMath";
@@ -16,6 +15,8 @@ import TranslationNote from "./TranslationNote";
 import { itemStyle, mutedText, secondaryButton } from "./styles";
 
 export const OPTION_LETTERS = ["A", "B", "C", "D"];
+
+const NO_ANSWERS: Record<number, number> = {};
 
 function optionColors(
   isChosen: boolean,
@@ -60,8 +61,14 @@ export default function QuizPanel({
     active,
   );
   const { t } = translation;
-  // The option index the student chose for each question, keyed by question position
-  const [chosen, setChosen] = useState<Record<number, number>>({});
+  // The option index the student chose for each question, keyed by question position. Kept
+  // for this version of the quiz when the student leaves the workspace and comes back.
+  const [chosen, setChosen] = usePersistentState(
+    artifact.row?.status === "completed"
+      ? `quiz:${lectureId}:${artifact.row.updated_at}`
+      : null,
+    NO_ANSWERS,
+  );
 
   const answeredCount = Object.keys(chosen).length;
   const score = questions.filter(

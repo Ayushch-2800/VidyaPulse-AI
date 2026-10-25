@@ -28,6 +28,7 @@ import {
   useTranslation,
 } from "@/lib/translate";
 import { useNotes, type NewNote } from "@/lib/workspace";
+import { readState, saveState, usePersistentState } from "@/lib/workspaceState";
 
 // Lecture IDs are Supabase UUIDs; only fetch a transcript once a full one is entered
 const UUID_PATTERN =
@@ -43,6 +44,8 @@ type Lecture = {
 };
 
 type ChatTurn = {
+  /** Matches an answer to its question, even after leaving the workspace and coming back */
+  id?: string;
   query: string;
   answer?: string;
   citations?: Citation[];
@@ -61,6 +64,27 @@ const TABS = [
 ] as const;
 
 type Tab = (typeof TABS)[number]["id"];
+
+const NO_TURNS: ChatTurn[] = [];
+const FIRST_TABS: Tab[] = ["ask"];
+
+const isPending = (turn: ChatTurn) =>
+  turn.answer === undefined && turn.error === undefined;
+
+// A question still waiting when the page reloaded will never get its answer
+const endInterruptedTurns = (turns: ChatTurn[]) =>
+  turns.map((turn) =>
+    isPending(turn)
+      ? {
+          ...turn,
+          error:
+            "This question was interrupted when the page reloaded. Please ask it again.",
+        }
+      : turn,
+  );
+
+/** Remembers playback per media file; a signed URL's token changes, its path does not. */
+const positionKey = (url: string) => `position:${url.split("?")[0]}`;
 
 // Memoized so the transcript's frequent time updates don't re-render every answer's markdown
 const ChatTurns = memo(function ChatTurns({
@@ -177,17 +201,37 @@ export default function ChatPage() {
   const [supabase] = useState(createClient);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [lectureNote, setLectureNote] = useState("");
-  const [lectureId, setLectureId] = useState("");
-  const [mediaUrl, setMediaUrl] = useState("");
-  const [media, setMedia] = useState<LectureMedia | null>(null);
-  const [query, setQuery] = useState("");
-  const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const [loading, setLoading] = useState(false);
+  // The workspace is kept when the student opens another page and comes back (and across
+  // reloads in the same tab): the lecture, video and position, questions and answers, open tab
+  const [lectureId, setLectureId] = usePersistentState("lecture", "");
+  const [mediaUrl, setMediaUrl] = usePersistentState("mediaUrl", "");
+  const [media, setMedia] = usePersistentState<LectureMedia | null>(
+    "media",
+    null,
+  );
+  // Whether the media was picked with the lecture (and can be re-signed) or pasted in
+  const [, setMediaSource] = usePersistentState<"lecture" | "custom">(
+    "mediaSource",
+    "lecture",
+  );
+  const [query, setQuery] = usePersistentState("query", "");
+  const askedLecture = lectureId.trim();
+  // Each lecture keeps its own conversation
+  const [turns, setTurns] = usePersistentState<ChatTurn[]>(
+    askedLecture ? `turns:${askedLecture}` : null,
+    NO_TURNS,
+    endInterruptedTurns,
+  );
+  const loading = turns.some(isPending);
   const [currentTime, setCurrentTime] = useState(0);
-  const [tab, setTab] = useState<Tab>("ask");
+  const [tab, setTab] = usePersistentState<Tab>("tab", "ask");
   // Panels mount on first visit and stay mounted, so a half-done quiz survives a tab switch
-  const [visited, setVisited] = useState<ReadonlySet<Tab>>(new Set(["ask"]));
+  const [visited, setVisited] = usePersistentState<Tab[]>(
+    "visited",
+    FIRST_TABS,
+  );
   const player = useRef<LecturePlayerHandle>(null);
+  const lastSavedSecond = useRef(-1);
   const language = useLanguagePreference();
 
   const workspaceLecture = UUID_PATTERN.test(lectureId.trim())
@@ -206,11 +250,24 @@ export default function ChatPage() {
 
   const openTab = (next: Tab) => {
     setTab(next);
-    setVisited((prev) => new Set(prev).add(next));
+    setVisited((prev) => (prev.includes(next) ? prev : [...prev, next]));
   };
+
+  const onTimeUpdate = useCallback(
+    (seconds: number) => {
+      setCurrentTime(seconds);
+      const second = Math.floor(seconds);
+      if (media && second !== lastSavedSecond.current) {
+        lastSavedSecond.current = second;
+        saveState(positionKey(media.url), second);
+      }
+    },
+    [media],
+  );
 
   // Pick the player source for a lecture: its YouTube link, or a signed URL for an upload
   const showLectureMedia = (lecture: Lecture) => {
+    setMediaSource("lecture");
     if (lecture.source_type === "youtube" && lecture.source_url) {
       setMediaUrl(lecture.source_url);
       setMedia({ kind: "youtube", url: lecture.source_url });
@@ -233,7 +290,6 @@ export default function ChatPage() {
     setLectureId(id);
     const lecture = list.find((l) => l.id === id);
     if (!lecture) return;
-    setTurns([]);
     showLectureMedia(lecture);
   };
 
@@ -252,7 +308,14 @@ export default function ChatPage() {
             "No lectures found. Log in as the lecture's owner, or paste a lecture ID below.",
           );
         setLectures(list);
-        if (fromUrl) selectLecture(fromUrl, list);
+        const saved = readState("lecture", "");
+        if (fromUrl && fromUrl !== saved) {
+          selectLecture(fromUrl, list);
+        } else if (saved && readState("mediaSource", "lecture") === "lecture") {
+          // Back in the workspace: reload the lecture's player, with a fresh signed URL
+          const lecture = list.find((l) => l.id === saved);
+          if (lecture) showLectureMedia(lecture);
+        }
       });
     // Runs once on mount; selectLecture only reads the list passed to it here
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -260,6 +323,7 @@ export default function ChatPage() {
 
   const loadMediaUrl = () => {
     const url = mediaUrl.trim();
+    setMediaSource("custom");
     if (!url) return setMedia(null);
     setMedia({
       kind: /youtube\.com|youtu\.be/.test(url) ? "youtube" : "file",
@@ -272,15 +336,14 @@ export default function ChatPage() {
     const question = query.trim();
     if (!question || !lectureId.trim()) return;
 
-    setLoading(true);
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setQuery("");
-    setTurns((prev) => [...prev, { query: question }]);
+    setTurns((prev) => [...prev, { id, query: question }]);
 
+    // Still lands if the student has left the workspace by the time the answer arrives
     const finish = (result: Partial<ChatTurn>) =>
       setTurns((prev) =>
-        prev.map((turn, i) =>
-          i === prev.length - 1 ? { ...turn, ...result } : turn,
-        ),
+        prev.map((turn) => (turn.id === id ? { ...turn, ...result } : turn)),
       );
 
     try {
@@ -298,8 +361,6 @@ export default function ChatPage() {
       });
     } catch (err) {
       finish({ error: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -499,7 +560,8 @@ export default function ChatPage() {
                 key={media.url}
                 ref={player}
                 media={media}
-                onTimeUpdate={setCurrentTime}
+                startAt={readState(positionKey(media.url), 0)}
+                onTimeUpdate={onTimeUpdate}
               />
             ) : (
               <div className="vp-empty">
@@ -560,7 +622,7 @@ export default function ChatPage() {
                 </p>
               ) : null}
               {TABS.map(({ id }) =>
-                visited.has(id) && (id === "ask" || workspaceLecture) ? (
+                visited.includes(id) && (id === "ask" || workspaceLecture) ? (
                   <div
                     key={id === "ask" ? id : `${id}-${workspaceLecture}`}
                     hidden={tab !== id}

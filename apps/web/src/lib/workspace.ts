@@ -188,6 +188,17 @@ export function useElapsedSeconds(since: number | null): number | null {
   return Math.max(0, Math.floor((now - since) / 1000));
 }
 
+type ArtifactResult = {
+  row: ArtifactRow<unknown> | null;
+  error: string | null;
+  /** When this response arrived (epoch ms) */
+  at: number;
+};
+
+// The last response for each lecture and artifact, so a panel shows its content straight away
+// when the student comes back to the workspace, while a fresh copy loads behind it
+const lastArtifacts = new Map<string, ArtifactResult>();
+
 export type Artifact<T> = {
   row: ArtifactRow<T> | null;
   loading: boolean;
@@ -212,12 +223,28 @@ export function useArtifact<T>(
   kind: ArtifactKind,
   active: boolean,
 ): Artifact<T> {
-  const [result, setResult] = useState<{
-    row: ArtifactRow<T> | null;
-    error: string | null;
-    /** When this response arrived (epoch ms) */
-    at: number;
-  } | null>(null);
+  const cacheKey = `${lectureId}:${kind}`;
+  const [result, setStoredResult] = useState<
+    (ArtifactResult & { row: ArtifactRow<T> | null }) | null
+  >(
+    () =>
+      (lastArtifacts.get(cacheKey) as ArtifactResult & {
+        row: ArtifactRow<T> | null;
+      }) ?? null,
+  );
+  const setResult = useCallback(
+    (
+      next: (
+        prev: (ArtifactResult & { row: ArtifactRow<T> | null }) | null,
+      ) => ArtifactResult & { row: ArtifactRow<T> | null },
+    ) =>
+      setStoredResult((prev) => {
+        const value = next(prev);
+        lastArtifacts.set(cacheKey, value);
+        return value;
+      }),
+    [cacheKey],
+  );
   const [tick, setTick] = useState(0);
   const [polls, setPolls] = useState(0);
   // updated_at of the row on screen when Generate was pressed; null when not waiting
@@ -235,16 +262,16 @@ export function useArtifact<T>(
       .then((data) => {
         const row = kind === "cheatsheet" ? data : data[kind];
         if (!cancelled)
-          setResult({
+          setResult(() => ({
             row: (row as ArtifactRow<T>) ?? null,
             error: null,
             at: Date.now(),
-          });
+          }));
       })
       .catch((err) => {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 404) {
-          setResult({ row: null, error: null, at: Date.now() });
+          setResult(() => ({ row: null, error: null, at: Date.now() }));
         } else {
           // A failed poll keeps what is already on screen
           setResult((prev) => ({
@@ -257,7 +284,7 @@ export function useArtifact<T>(
     return () => {
       cancelled = true;
     };
-  }, [lectureId, kind, tick, active]);
+  }, [lectureId, kind, tick, active, setResult]);
 
   const row = result?.row ?? null;
   const fresh = row !== null && row.updated_at !== waitingFor && !isBusy(row);
@@ -316,6 +343,9 @@ export function useArtifact<T>(
 
 // ---- Notes ----
 
+// Each lecture's notes as last loaded, shown at once on returning to the workspace
+const lastNotes = new Map<string, Note[]>();
+
 type NotesState =
   | { lectureId: string; status: "ready"; notes: Note[] }
   | { lectureId: string; status: "error"; message: string };
@@ -334,7 +364,16 @@ export type Notes = {
 
 /** The student's notes for a lecture, with add, edit and delete. */
 export function useNotes(lectureId: string | null): Notes {
-  const [state, setState] = useState<NotesState | null>(null);
+  const [state, setState] = useState<NotesState | null>(() => {
+    const saved = lectureId ? lastNotes.get(lectureId) : undefined;
+    return lectureId && saved
+      ? { lectureId, status: "ready", notes: saved }
+      : null;
+  });
+
+  useEffect(() => {
+    if (state?.status === "ready") lastNotes.set(state.lectureId, state.notes);
+  }, [state]);
 
   useEffect(() => {
     if (!lectureId) return;

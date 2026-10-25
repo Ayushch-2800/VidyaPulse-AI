@@ -37,10 +37,13 @@ export function isAudioUrl(url: string): boolean {
  */
 export default function LecturePlayer({
   media,
+  startAt = 0,
   onTimeUpdate,
   ref,
 }: {
   media: LectureMedia;
+  /** Where to resume, in seconds, when the player first loads */
+  startAt?: number;
   onTimeUpdate?: (seconds: number) => void;
   ref?: React.Ref<LecturePlayerHandle>;
 }) {
@@ -50,6 +53,8 @@ export default function LecturePlayer({
   // Set when a file we expected to be video turns out to have no picture
   const [noVideoTrack, setNoVideoTrack] = useState(false);
   const reportTime = useRef(onTimeUpdate);
+  // Read once: later position updates must not reload the player
+  const resumeAt = useRef(Math.max(0, Math.floor(startAt)));
 
   useEffect(() => {
     reportTime.current = onTimeUpdate;
@@ -73,6 +78,7 @@ export default function LecturePlayer({
         videoId,
         width: "100%",
         height: "100%",
+        playerVars: resumeAt.current ? { start: resumeAt.current } : undefined,
       });
     });
 
@@ -138,6 +144,18 @@ export default function LecturePlayer({
   }
 
   const mediaEvents = {
+    onLoadedMetadata: (e: React.SyntheticEvent<HTMLMediaElement>) => {
+      const element = e.currentTarget;
+      if (resumeAt.current && element.currentTime === 0) {
+        element.currentTime = Math.min(
+          resumeAt.current,
+          element.duration || resumeAt.current,
+        );
+      }
+      // No extension to go on (e.g. a bare signed URL), so check for a picture once loaded
+      if (element instanceof HTMLVideoElement && element.videoWidth === 0)
+        setNoVideoTrack(true);
+    },
     onTimeUpdate: (e: React.SyntheticEvent<HTMLMediaElement>) =>
       reportTime.current?.(e.currentTarget.currentTime),
     onSeeked: (e: React.SyntheticEvent<HTMLMediaElement>) =>
@@ -185,10 +203,6 @@ export default function LecturePlayer({
       src={media.url}
       controls
       preload="metadata"
-      onLoadedMetadata={(e) => {
-        // No extension to go on (e.g. a bare signed URL), so check for a picture once loaded
-        if (e.currentTarget.videoWidth === 0) setNoVideoTrack(true);
-      }}
       style={{
         width: "100%",
         maxHeight: "360px",

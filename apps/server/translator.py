@@ -10,11 +10,17 @@ back afterwards, so Gemini can never mangle LaTeX or move a timestamp.
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from gemini_utils import CHAT_MODEL, generate_structured, log
+from gemini_utils import (
+    CHAT_MODEL,
+    INTERACTIVE_TIMEOUT_SECONDS,
+    generate_structured,
+    log,
+)
 from storage_utils import supabase
 
 TAG = "TRANSLATE"
@@ -30,8 +36,14 @@ LANGUAGES = {
 }
 SOURCE_LANGUAGE = "en"
 MAX_TEXTS_PER_REQUEST = 300
-# Indic scripts take several times more output tokens than English, so keep each call small
-MAX_BATCH_CHARS = 6000
+# Indic scripts take several times more output tokens than English, so keep each call small;
+# small calls running side by side finish far sooner than one long call
+MAX_BATCH_CHARS = 2500
+# Gemini calls in flight at once for one request. Higher risks the free tier's per-minute quota.
+PARALLEL_CALLS = 4
+# A longer text (a summary) is split at paragraph breaks into parts of about this size, so its
+# parts translate in parallel instead of in one slow call
+MAX_PIECE_CHARS = 1200
 # Hashes per PostgREST in() filter, so the request URL stays short
 CACHE_LOOKUP_BATCH = 50
 
@@ -40,6 +52,7 @@ PROTECTED_PATTERN = re.compile(
     r"\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|```[\s\S]*?```|`[^`\n]*`|\[\d{1,3}:[0-5]\d\]"
 )
 PLACEHOLDER_PATTERN = re.compile(r"\{\{(\d+)\}\}")
+PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n\s*")
 LETTER_PATTERN = re.compile(r"[^\W\d_]")
 
 
@@ -146,6 +159,37 @@ def batch_texts(texts: List[str]) -> List[List[str]]:
     return batches
 
 
+def split_long_text(text: str) -> Tuple[List[str], List[str]]:
+    """
+    Splits text longer than MAX_PIECE_CHARS at paragraph breaks outside math and code, into
+    pieces of about MAX_PIECE_CHARS. Returns (pieces, separators), so that the pieces joined
+    with the separators between them give back the text.
+    """
+    if len(text) <= MAX_PIECE_CHARS:
+        return [text], []
+    protected = [m.span() for m in PROTECTED_PATTERN.finditer(text)]
+    pieces: List[str] = []
+    separators: List[str] = []
+    start = 0
+    for brk in PARAGRAPH_BREAK.finditer(text):
+        if brk.start() - start < MAX_PIECE_CHARS:
+            continue
+        if any(a < brk.start() < b for a, b in protected):
+            continue
+        pieces.append(text[start : brk.start()])
+        separators.append(brk.group(0))
+        start = brk.end()
+    pieces.append(text[start:])
+    return pieces, separators
+
+
+def join_pieces(pieces: List[str], separators: List[str]) -> str:
+    out = pieces[0]
+    for separator, piece in zip(separators, pieces[1:]):
+        out += separator + piece
+    return out
+
+
 def translate_batch(texts: List[str], language: str) -> List[Optional[str]]:
     """One structured Gemini call for the batch. An item that comes back damaged is None."""
     masked = [protect(text) for text in texts]
@@ -156,8 +200,14 @@ def translate_batch(texts: List[str], language: str) -> List[Optional[str]]:
         f"ITEMS:\n{payload}",
         translation_prompt(language),
         TranslationBatch,
-        temperature=0.2,
+        # Google advises against lowering Gemini 3's temperature: it can loop until the deadline
+        temperature=None if CHAT_MODEL.startswith("gemini-3") else 0.2,
         tag=TAG,
+        # A student is waiting on this: no free-tier pacing, the short deadline, then the faster model
+        pace=False,
+        max_retries=3,
+        timeout_seconds=INTERACTIVE_TIMEOUT_SECONDS,
+        fallback=True,
     )
     by_id = {item.id: item.text for item in result.items}
 
@@ -177,8 +227,9 @@ def translate_batch(texts: List[str], language: str) -> List[Optional[str]]:
 def translate_texts(texts: List[str], language: str) -> List[str]:
     """
     Returns `texts` translated into `language`, in the same order. Cached translations are
-    reused; the rest go to Gemini in as few calls as fit MAX_BATCH_CHARS. Texts with nothing to
-    translate, and any text Gemini returns damaged, come back unchanged.
+    reused. The rest go to Gemini in calls of up to MAX_BATCH_CHARS, PARALLEL_CALLS at a time,
+    with long texts split into paragraphs first. Texts with nothing to translate, and any text
+    Gemini returns damaged, come back unchanged.
     """
     if language not in LANGUAGES:
         raise ValueError(
@@ -198,40 +249,96 @@ def translate_texts(texts: List[str], language: str) -> List[str]:
 
     hashes = {text: source_hash(text) for text in positions}
     cached = read_cache(list(hashes.values()), language)
+    hits: Dict[str, str] = {}
     missing = []
     for text, indexes in positions.items():
         hit = cached.get(hashes[text])
         if hit is None:
             missing.append(text)
             continue
+        hits[text] = hit
         for i in indexes:
             results[i] = hit
+    if not missing:
+        return results
+
+    # Long texts go in as their parts, which are cached on their own as well
+    splits = {text: split_long_text(text) for text in missing}
+    units = list(
+        dict.fromkeys(
+            piece
+            for text in missing
+            for piece in splits[text][0]
+            if needs_translation(piece)
+        )
+    )
+    unit_hashes = {u: hashes.get(u) or source_hash(u) for u in units}
+    done: Dict[str, str] = {u: hits[u] for u in units if u in hits}
+    parts = [u for u in units if u not in positions]
+    if parts:
+        part_cache = read_cache([unit_hashes[u] for u in parts], language)
+        done.update(
+            {
+                u: part_cache[unit_hashes[u]]
+                for u in parts
+                if unit_hashes[u] in part_cache
+            }
+        )
+    todo = [u for u in units if u not in done]
 
     name = LANGUAGES[language]
-    batches = batch_texts(missing)
+    batches = batch_texts(todo)
     log(
         TAG,
         f"{len(positions)} unique text(s) for {name}: {len(positions) - len(missing)} cached, "
-        f"{len(missing)} to translate in {len(batches)} Gemini call(s).",
+        f"{len(missing)} to translate as {len(todo)} part(s) in {len(batches)} Gemini call(s), "
+        f"up to {PARALLEL_CALLS} at a time.",
     )
 
-    for n, batch in enumerate(batches, start=1):
-        log(TAG, f"Gemini call {n}/{len(batches)}: {len(batch)} text(s) into {name}...")
-        new_rows = []
-        for text, translated in zip(batch, translate_batch(batch, language)):
-            if translated is None:
+    def run(batch: List[str]) -> List[Tuple[str, Optional[str]]]:
+        return list(zip(batch, translate_batch(batch, language)))
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(PARALLEL_CALLS, len(batches)))
+    ) as pool:
+        for batch_result in pool.map(run, batches):
+            new_rows = []
+            for unit, out in batch_result:
+                if out is None:
+                    continue
+                done[unit] = out
+                new_rows.append(
+                    {
+                        "source_hash": unit_hashes[unit],
+                        "language": language,
+                        "translated_text": out,
+                        "model": CHAT_MODEL,
+                    }
+                )
+            write_cache(new_rows)
+
+    whole_rows = []
+    for text in missing:
+        pieces, separators = splits[text]
+        if len(pieces) == 1:
+            out = done.get(text)
+            if out is None:
                 continue
-            for i in positions[text]:
-                results[i] = translated
-            new_rows.append(
-                {
-                    "source_hash": hashes[text],
-                    "language": language,
-                    "translated_text": translated,
-                    "model": CHAT_MODEL,
-                }
-            )
-        write_cache(new_rows)
+        else:
+            out = join_pieces([done.get(p, p) for p in pieces], separators)
+            # A part that came back damaged stays in English; retry the whole text next time
+            if all(p in done or not needs_translation(p) for p in pieces):
+                whole_rows.append(
+                    {
+                        "source_hash": hashes[text],
+                        "language": language,
+                        "translated_text": out,
+                        "model": CHAT_MODEL,
+                    }
+                )
+        for i in positions[text]:
+            results[i] = out
+    write_cache(whole_rows)
 
     log(TAG, f"Translation into {name} done.")
     return results

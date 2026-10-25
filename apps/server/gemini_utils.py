@@ -385,20 +385,33 @@ def generate_structured(
     prompt: str,
     system_instruction: str,
     schema: Type[T],
-    temperature: float,
+    temperature: Optional[float],
     tag: str,
+    pace: bool = True,
+    max_retries: int = MAX_RETRIES,
+    timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
+    fallback: bool = False,
 ) -> T:
-    """Calls Gemini Flash in JSON mode with a pydantic schema, with timeout, pacing and logged retries."""
+    """
+    Calls Gemini Flash in JSON mode with a pydantic schema, with timeout, pacing and logged
+    retries. temperature=None leaves the model's default. Background jobs keep the defaults;
+    a call a student is waiting on passes pace=False, a shorter timeout and fallback=True.
+    """
     from google.genai import types
 
+    options = base_config_options()
+    if temperature is not None:
+        options["temperature"] = temperature
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
-        temperature=temperature,
         response_mime_type="application/json",
         response_schema=schema,
-        **base_config_options(),
+        **options,
     )
-    response, _ = _generate(prompt, config, tag, pace=True, max_retries=MAX_RETRIES)
+    fallback_model = FALLBACK_MODEL if fallback and FALLBACK_MODEL != CHAT_MODEL else ""
+    response, _ = _generate(
+        prompt, config, tag, pace, max_retries, timeout_seconds, fallback_model
+    )
     if isinstance(response.parsed, schema):
         return response.parsed
     return schema.model_validate_json(response.text or "{}")
