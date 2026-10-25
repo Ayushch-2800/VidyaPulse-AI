@@ -38,7 +38,11 @@ export default function SaveNoteButton({
         style={{
           ...secondaryButton,
           ...(state === "saved"
-            ? { color: "#047857", borderColor: "#047857", cursor: "default" }
+            ? {
+                color: "var(--vp-success)",
+                borderColor: "var(--vp-success)",
+                cursor: "default",
+              }
             : {}),
         }}
       >

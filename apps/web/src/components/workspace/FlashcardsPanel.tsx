@@ -74,7 +74,7 @@ export default function FlashcardsPanel({
               {revealed ? (
                 <div
                   style={{
-                    borderTop: "1px solid #E5E7EB",
+                    borderTop: "1px solid var(--vp-border)",
                     paddingTop: "12px",
                   }}
                 >

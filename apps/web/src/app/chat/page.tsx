@@ -18,6 +18,7 @@ import SaveNoteButton from "@/components/workspace/SaveNoteButton";
 import SummaryPanel from "@/components/workspace/SummaryPanel";
 import TranslationNote from "@/components/workspace/TranslationNote";
 import { mutedText, panelStyle } from "@/components/workspace/styles";
+import Icon from "@/components/site/Icon";
 import { API_URL } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import { createClient } from "@/lib/supabase/client";
@@ -50,30 +51,13 @@ type ChatTurn = {
   cached?: boolean;
 };
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px",
-  borderRadius: "6px",
-  border: "1px solid #ccc",
-  boxSizing: "border-box",
-};
-
-const buttonStyle: React.CSSProperties = {
-  padding: "10px 20px",
-  backgroundColor: "#0070f3",
-  color: "#fff",
-  border: "none",
-  borderRadius: "6px",
-  cursor: "pointer",
-};
-
 const TABS = [
-  { id: "ask", label: "Ask" },
-  { id: "summary", label: "Summary" },
-  { id: "cheatsheet", label: "Cheat sheet" },
-  { id: "flashcards", label: "Flashcards" },
-  { id: "quiz", label: "Quiz" },
-  { id: "notes", label: "My notes" },
+  { id: "ask", label: "Ask", icon: "ask" },
+  { id: "summary", label: "Summary", icon: "summary" },
+  { id: "cheatsheet", label: "Cheat sheet", icon: "formula" },
+  { id: "flashcards", label: "Flashcards", icon: "cards" },
+  { id: "quiz", label: "Quiz", icon: "quiz" },
+  { id: "notes", label: "My notes", icon: "notes" },
 ] as const;
 
 type Tab = (typeof TABS)[number]["id"];
@@ -102,21 +86,51 @@ const ChatTurns = memo(function ChatTurns({
       )}
       {turns.map((turn, i) => (
         <div key={i}>
-          <p style={{ fontWeight: 600, margin: "0 0 8px 0" }}>{turn.query}</p>
           <div
             style={{
-              padding: "12px 16px",
-              border: "1px solid #E5E7EB",
-              borderRadius: "8px",
-              backgroundColor: "#F9FAFB",
-              // Set explicitly: in dark mode the inherited text colour is near-white
-              color: "#111827",
+              display: "flex",
+              justifyContent: "flex-end",
+              marginBottom: "10px",
+            }}
+          >
+            <p
+              style={{
+                margin: 0,
+                maxWidth: "85%",
+                padding: "10px 14px",
+                borderRadius: "14px 14px 4px 14px",
+                background: "var(--vp-gradient-btn)",
+                color: "#fff",
+                fontWeight: 500,
+              }}
+            >
+              {turn.query}
+            </p>
+          </div>
+          <div
+            style={{
+              padding: "14px 16px",
+              border: "1px solid var(--vp-border)",
+              borderRadius: "14px 14px 14px 4px",
+              backgroundColor: "var(--vp-surface-2)",
+              color: "var(--vp-text)",
             }}
           >
             {turn.error ? (
-              <p style={{ margin: 0, color: "#B91C1C" }}>{turn.error}</p>
+              <p style={{ margin: 0, color: "var(--vp-danger)" }}>
+                {turn.error}
+              </p>
             ) : turn.answer === undefined ? (
-              <p style={{ margin: 0, color: "#6B7280" }}>
+              <p
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  margin: 0,
+                  ...mutedText,
+                }}
+              >
+                <span className="vp-spinner" aria-hidden="true" />
                 Thinking… Gemini&apos;s free tier can take up to a minute.
               </p>
             ) : (
@@ -131,7 +145,7 @@ const ChatTurns = memo(function ChatTurns({
                     style={{
                       margin: "8px 0 0",
                       fontSize: "0.85em",
-                      color: "#6B7280",
+                      ...mutedText,
                     }}
                   >
                     From the saved lecture summary, so no wait for Gemini.
@@ -309,16 +323,22 @@ export default function ChatPage() {
       <form onSubmit={handleAsk} style={{ display: "flex", gap: "10px" }}>
         <input
           required
+          aria-label="Your question"
           placeholder="Ask a question about this lecture"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          style={inputStyle}
+          className="vp-input"
         />
         <button
           type="submit"
           disabled={loading || !lectureId.trim()}
-          style={buttonStyle}
+          className="vp-btn vp-btn-primary"
         >
+          {loading ? (
+            <span className="vp-spinner" aria-hidden="true" />
+          ) : (
+            <Icon name="arrowRight" />
+          )}
           {loading ? "Asking…" : "Ask"}
         </button>
       </form>
@@ -373,55 +393,51 @@ export default function ChatPage() {
 
   return (
     <LanguageContext.Provider value={language}>
-      <div
-        style={{
-          maxWidth: "1200px",
-          margin: "40px auto",
-          padding: "24px",
-          fontFamily: "system-ui, sans-serif",
-        }}
-      >
+      <div className="vp-container vp-page vp-workspace">
         <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "12px",
-            marginBottom: "16px",
-          }}
+          className="flex flex-wrap items-end justify-between gap-4"
+          style={{ marginBottom: "20px" }}
         >
-          <h1 style={{ fontSize: "1.75rem", fontWeight: 700, margin: 0 }}>
-            Lecture Workspace
-          </h1>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div>
+            <p className="vp-eyebrow">Study workspace</p>
+            <h1 className="vp-page-title">Lecture Workspace</h1>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
             <LanguageSelect />
             {workspaceLecture ? (
               <Link
                 href={`/chat/export?lecture=${workspaceLecture}&print=1`}
                 target="_blank"
-                style={{ ...buttonStyle, textDecoration: "none" }}
+                className="vp-btn vp-btn-primary"
                 title="Open a print-ready copy of the summary, cheat sheet, flashcards, quiz and notes"
               >
+                <Icon name="pdf" />
                 Export PDF
               </Link>
             ) : (
               <span
-                style={{ ...buttonStyle, opacity: 0.5, cursor: "not-allowed" }}
+                className="vp-btn vp-btn-primary"
+                aria-disabled="true"
                 title="Choose a lecture first"
               >
+                <Icon name="pdf" />
                 Export PDF
               </span>
             )}
           </div>
         </div>
 
-        <div style={{ display: "grid", gap: "10px", marginBottom: "20px" }}>
+        <section
+          className="vp-card grid gap-3 p-4 md:grid-cols-2"
+          style={{ marginBottom: "24px", borderRadius: "18px" }}
+          aria-label="Choose a lecture"
+        >
           {lectures.length > 0 ? (
             <select
+              aria-label="Lecture"
               value={lectureId}
               onChange={(e) => selectLecture(e.target.value)}
-              style={inputStyle}
+              className="vp-input md:col-span-2"
             >
               <option value="">Choose a lecture…</option>
               {lectures.map((l) => (
@@ -433,27 +449,40 @@ export default function ChatPage() {
             </select>
           ) : (
             lectureNote && (
-              <p style={{ margin: 0, color: "#6B7280" }}>{lectureNote}</p>
+              <p
+                className="flex items-start gap-2 md:col-span-2"
+                style={{ margin: 0, ...mutedText }}
+              >
+                <Icon name="alert" className="mt-1 h-4 w-4 flex-none" />
+                {lectureNote}
+              </p>
             )
           )}
           <input
+            aria-label="Lecture ID"
             placeholder="Lecture ID"
             value={lectureId}
             onChange={(e) => selectLecture(e.target.value)}
-            style={inputStyle}
+            className="vp-input"
           />
           <div style={{ display: "flex", gap: "10px" }}>
             <input
+              aria-label="YouTube or media URL"
               placeholder="YouTube or media URL to play alongside the answers"
               value={mediaUrl}
               onChange={(e) => setMediaUrl(e.target.value)}
-              style={inputStyle}
+              className="vp-input"
             />
-            <button type="button" onClick={loadMediaUrl} style={buttonStyle}>
+            <button
+              type="button"
+              onClick={loadMediaUrl}
+              className="vp-btn vp-btn-ghost"
+            >
+              <Icon name="play" />
               Load
             </button>
           </div>
-        </div>
+        </section>
 
         <div
           style={{
@@ -465,42 +494,56 @@ export default function ChatPage() {
         >
           {/* Wraps the transcript below the workspace only when there isn't room for both */}
           <div style={{ flex: "1 1 0%", minWidth: "min(100%, 420px)" }}>
-            {media && (
+            {media ? (
               <LecturePlayer
                 key={media.url}
                 ref={player}
                 media={media}
                 onTimeUpdate={setCurrentTime}
               />
+            ) : (
+              <div className="vp-empty">
+                <span className="vp-icon-tile">
+                  <Icon name="video" />
+                </span>
+                <h2>
+                  {workspaceLecture
+                    ? "Watch while you study"
+                    : "Pick a lecture to begin"}
+                </h2>
+                <p>
+                  {workspaceLecture
+                    ? "Paste the lecture's YouTube or media link above and press Load to play it beside your answers."
+                    : "Choose one of your lectures above or paste a lecture ID. New here? Add your first lecture."}
+                </p>
+                {!workspaceLecture && (
+                  <Link
+                    href="/ingest"
+                    className="vp-btn vp-btn-primary vp-btn-sm"
+                  >
+                    Add a lecture
+                    <Icon name="arrowRight" />
+                  </Link>
+                )}
+              </div>
             )}
 
             <div
               role="tablist"
               aria-label="Study workspace"
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "6px",
-                margin: "24px 0 12px",
-              }}
+              className="vp-tabs"
+              style={{ margin: "20px 0 14px" }}
             >
-              {TABS.map(({ id, label }) => (
+              {TABS.map(({ id, label, icon }) => (
                 <button
                   key={id}
                   type="button"
                   role="tab"
                   aria-selected={tab === id}
                   onClick={() => openTab(id)}
-                  style={{
-                    padding: "8px 14px",
-                    border: "none",
-                    borderRadius: "999px",
-                    backgroundColor: tab === id ? "#0070f3" : "#F3F4F6",
-                    color: tab === id ? "#fff" : "#111827",
-                    fontWeight: tab === id ? 600 : 400,
-                    cursor: "pointer",
-                  }}
+                  className="vp-tab"
                 >
+                  <Icon name={icon} />
                   {label}
                   {id === "notes" && notes.notes.length > 0
                     ? ` (${notes.notes.length})`

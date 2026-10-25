@@ -23,10 +23,19 @@ function optionColors(
   answered: boolean,
 ): React.CSSProperties {
   if (answered && isCorrect)
-    return { backgroundColor: "#ECFDF5", borderColor: "#047857" };
+    return {
+      backgroundColor: "var(--vp-success-bg)",
+      borderColor: "var(--vp-success)",
+    };
   if (answered && isChosen)
-    return { backgroundColor: "#FEF2F2", borderColor: "#B91C1C" };
-  return { backgroundColor: "#fff", borderColor: "#D1D5DB" };
+    return {
+      backgroundColor: "var(--vp-danger-bg)",
+      borderColor: "var(--vp-danger)",
+    };
+  return {
+    backgroundColor: "var(--vp-field-bg)",
+    borderColor: "var(--vp-border-strong)",
+  };
 }
 
 /** The Task 16 multiple-choice quiz: answer each question, then read why each option is right or wrong. */
@@ -104,6 +113,7 @@ export default function QuizPanel({
                         <button
                           key={oi}
                           type="button"
+                          className="vp-quiz-option"
                           disabled={answered}
                           onClick={() =>
                             setChosen((prev) => ({ ...prev, [qi]: oi }))
@@ -112,10 +122,11 @@ export default function QuizPanel({
                             display: "flex",
                             gap: "8px",
                             textAlign: "left",
-                            padding: "8px 10px",
+                            padding: "10px 12px",
                             border: "1px solid",
-                            borderRadius: "6px",
-                            color: "#111827",
+                            borderRadius: "10px",
+                            color: "var(--vp-text)",
+                            font: "inherit",
                             cursor: answered ? "default" : "pointer",
                             ...optionColors(
                               chosen[qi] === oi,
@@ -144,7 +155,9 @@ export default function QuizPanel({
                               gap: "6px",
                               marginBottom: "4px",
                               color:
-                                oi === q.correct_index ? "#047857" : "#374151",
+                                oi === q.correct_index
+                                  ? "var(--vp-success)"
+                                  : "var(--vp-text-2)",
                             }}
                           >
                             <strong>{OPTION_LETTERS[oi]}:</strong>

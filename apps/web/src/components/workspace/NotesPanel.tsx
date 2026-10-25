@@ -166,8 +166,8 @@ function NoteCard({
           onClick={remove}
           style={{
             ...secondaryButton,
-            color: "#B91C1C",
-            borderColor: "#B91C1C",
+            color: "var(--vp-danger)",
+            borderColor: "var(--vp-danger)",
           }}
         >
           Delete

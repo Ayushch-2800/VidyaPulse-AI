@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import CitedAnswer from "@/components/chat/CitedAnswer";
+import Icon from "@/components/site/Icon";
 import {
   CHEAT_SHEET_SECTIONS,
   cheatSheetItems,
@@ -47,7 +48,7 @@ const EXPORT_CSS = `
 .export-sheet a { color: #1D4ED8; text-decoration: underline; }
 @page { margin: 16mm; }
 @media print {
-  .no-print, body > footer { display: none !important; }
+  .no-print { display: none !important; }
   body { background: #fff !important; }
   .export-sheet { box-shadow: none !important; margin: 0 !important; max-width: none !important; padding: 0 !important; }
   .export-item { break-inside: avoid; }
@@ -382,53 +383,48 @@ export default function ExportPage() {
     <LanguageContext.Provider value={language}>
       <style>{EXPORT_CSS}</style>
       <div
-        className="no-print"
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: "12px",
-          padding: "16px",
-        }}
+        className="no-print vp-container"
+        style={{ maxWidth: "896px", paddingBlock: "28px 20px" }}
       >
-        <Link href={backHref} style={{ color: "#3B82F6" }}>
-          ← Back to the workspace
-        </Link>
-        <LanguageSelect />
-        <button
-          type="button"
-          onClick={() => window.print()}
-          disabled={state.status !== "ready"}
-          style={{
-            padding: "8px 16px",
-            backgroundColor: "#0070f3",
-            color: "#fff",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-          }}
+        <div
+          className="vp-card flex flex-wrap items-center justify-between gap-3 p-3 sm:p-4"
+          style={{ borderRadius: "18px" }}
         >
-          Save as PDF
-        </button>
-        <span style={{ fontSize: "0.85em", color: "#9CA3AF" }}>
+          <Link href={backHref} className="vp-btn vp-btn-ghost vp-btn-sm">
+            <Icon name="arrowLeft" />
+            Back to the workspace
+          </Link>
+          <div className="flex flex-wrap items-center gap-3">
+            <LanguageSelect />
+            <button
+              type="button"
+              onClick={() => window.print()}
+              disabled={state.status !== "ready"}
+              className="vp-btn vp-btn-primary"
+            >
+              <Icon name="pdf" />
+              Save as PDF
+            </button>
+          </div>
+        </div>
+        <p className="mt-3 text-center text-sm text-muted">
           In the print dialog, pick “Save as PDF” as the destination.
-        </span>
+        </p>
       </div>
 
+      {/* .vp-paper switches the design tokens to dark-on-white for the printed page */}
       <article
-        className="export-sheet"
+        className="export-sheet vp-paper"
         style={{
           maxWidth: "800px",
-          margin: "0 auto 40px",
-          padding: "40px 48px",
+          margin: "0 auto 56px",
+          padding: "clamp(24px, 5vw, 48px)",
           backgroundColor: "#fff",
-          // Set explicitly: in dark mode the inherited text colour is near-white
-          color: "#111827",
+          color: "var(--vp-text)",
           lineHeight: 1.55,
-          fontFamily: "system-ui, -apple-system, sans-serif",
-          boxShadow: "0 1px 6px rgba(0, 0, 0, 0.25)",
-          borderRadius: "4px",
+          fontFamily: "var(--font-sans)",
+          boxShadow: "0 30px 80px -30px rgba(0, 0, 0, 0.9)",
+          borderRadius: "12px",
         }}
       >
         {state.status === "loading" && <p style={mutedText}>Loading…</p>}

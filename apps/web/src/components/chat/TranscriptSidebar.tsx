@@ -102,11 +102,12 @@ export default function TranscriptSidebar({
       style={{
         display: "flex",
         flexDirection: "column",
-        border: "1px solid #E5E7EB",
-        borderRadius: "8px",
-        backgroundColor: "#fff",
-        // Set explicitly: in dark mode the inherited text colour is near-white
-        color: "#111827",
+        border: "1px solid var(--vp-border)",
+        borderRadius: "18px",
+        backgroundColor: "var(--vp-surface)",
+        color: "var(--vp-text)",
+        boxShadow: "var(--vp-shadow)",
+        overflow: "hidden",
         minHeight: 0,
         height: "100%",
       }}
@@ -114,10 +115,11 @@ export default function TranscriptSidebar({
       <h2
         style={{
           margin: 0,
-          padding: "12px 16px",
+          padding: "14px 18px",
+          fontFamily: "var(--font-display)",
           fontSize: "1rem",
-          fontWeight: 600,
-          borderBottom: "1px solid #E5E7EB",
+          fontWeight: 700,
+          borderBottom: "1px solid var(--vp-border)",
         }}
       >
         Transcript
@@ -134,10 +136,14 @@ export default function TranscriptSidebar({
         }}
       >
         {state.status === "loading" && (
-          <p style={{ margin: "8px", color: "#6B7280" }}>Loading transcript…</p>
+          <p style={{ margin: "8px", color: "var(--vp-muted)" }}>
+            Loading transcript…
+          </p>
         )}
         {state.status === "error" && (
-          <p style={{ margin: "8px", color: "#B91C1C" }}>{state.message}</p>
+          <p style={{ margin: "8px", color: "var(--vp-danger)" }}>
+            {state.message}
+          </p>
         )}
         {segments.map((segment, i) => {
           const isActive = i === active;
@@ -158,10 +164,10 @@ export default function TranscriptSidebar({
                 padding: "8px 10px",
                 marginBottom: "4px",
                 border: "none",
-                borderLeft: `3px solid ${isActive ? "#0070f3" : "transparent"}`,
-                borderRadius: "4px",
-                backgroundColor: isActive ? "#EFF6FF" : "transparent",
-                color: isActive ? "#111827" : "#374151",
+                borderLeft: `3px solid ${isActive ? "var(--vp-cyan)" : "transparent"}`,
+                borderRadius: "8px",
+                backgroundColor: isActive ? "var(--vp-seek-bg)" : "transparent",
+                color: isActive ? "var(--vp-text)" : "var(--vp-text-2)",
                 font: "inherit",
                 lineHeight: 1.5,
                 cursor: "pointer",
@@ -171,7 +177,7 @@ export default function TranscriptSidebar({
                 style={{
                   display: "block",
                   fontSize: "0.75em",
-                  color: "#0070f3",
+                  color: "var(--vp-link)",
                   fontVariantNumeric: "tabular-nums",
                 }}
               >

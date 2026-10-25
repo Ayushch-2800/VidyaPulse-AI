@@ -114,7 +114,7 @@ export default function LecturePlayer({
 
   if (media.kind === "youtube" && !videoId) {
     return (
-      <p style={{ color: "#B91C1C" }}>
+      <p style={{ color: "var(--vp-danger)" }}>
         Could not read a YouTube video ID from {media.url}
       </p>
     );
@@ -128,8 +128,10 @@ export default function LecturePlayer({
           aspectRatio: "16 / 9",
           width: "100%",
           backgroundColor: "#000",
-          borderRadius: "8px",
+          borderRadius: "18px",
           overflow: "hidden",
+          border: "1px solid var(--vp-border)",
+          boxShadow: "var(--vp-shadow)",
         }}
       />
     );
@@ -147,12 +149,18 @@ export default function LecturePlayer({
       <div
         style={{
           padding: "16px",
-          border: "1px solid #E5E7EB",
-          borderRadius: "8px",
-          backgroundColor: "#F9FAFB",
+          border: "1px solid var(--vp-border)",
+          borderRadius: "18px",
+          backgroundColor: "var(--vp-surface)",
         }}
       >
-        <p style={{ margin: "0 0 8px 0", color: "#6B7280", fontSize: "0.9em" }}>
+        <p
+          style={{
+            margin: "0 0 8px 0",
+            color: "var(--vp-muted)",
+            fontSize: "0.9em",
+          }}
+        >
           🎧 Audio lecture
         </p>
         <audio
@@ -185,7 +193,8 @@ export default function LecturePlayer({
         width: "100%",
         maxHeight: "360px",
         backgroundColor: "#000",
-        borderRadius: "8px",
+        borderRadius: "18px",
+        border: "1px solid var(--vp-border)",
       }}
       {...mediaEvents}
     />

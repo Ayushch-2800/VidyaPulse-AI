@@ -12,17 +12,14 @@ export default function LanguageSelect() {
   const language = useLanguagePreference();
   return (
     <label style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-      <span style={{ fontSize: "0.9em" }}>Language</span>
+      <span style={{ fontSize: "0.9em", color: "var(--vp-text-2)" }}>
+        Language
+      </span>
       <select
         value={language}
         onChange={(e) => setLanguage(e.target.value as LanguageCode)}
-        style={{
-          padding: "8px 10px",
-          borderRadius: "6px",
-          border: "1px solid #ccc",
-          backgroundColor: "#fff",
-          color: "#111827",
-        }}
+        className="vp-input"
+        style={{ width: "auto", minHeight: "44px", paddingBlock: "8px" }}
       >
         {LANGUAGES.map((l) => (
           <option key={l.code} value={l.code}>
