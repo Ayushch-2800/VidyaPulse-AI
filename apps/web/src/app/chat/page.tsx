@@ -249,8 +249,16 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div style={{ minWidth: 0 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "flex-start",
+          gap: "24px",
+        }}
+      >
+        {/* Wraps the transcript below the chat only when there isn't room for both */}
+        <div style={{ flex: "1 1 0%", minWidth: "min(100%, 420px)" }}>
           {media && (
             <LecturePlayer
               key={media.url}
@@ -283,7 +291,16 @@ export default function ChatPage() {
         </div>
 
         {UUID_PATTERN.test(lectureId.trim()) && (
-          <div className="h-[60vh] lg:sticky lg:top-6 lg:h-[calc(100vh-48px)]">
+          <div
+            style={{
+              flex: "0 0 360px",
+              width: "360px",
+              maxWidth: "100%",
+              position: "sticky",
+              top: "24px",
+              height: "calc(100vh - 48px)",
+            }}
+          >
             <TranscriptSidebar
               key={lectureId.trim()}
               lectureId={lectureId.trim()}
