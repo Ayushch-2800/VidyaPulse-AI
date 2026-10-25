@@ -33,6 +33,9 @@ export function activeSegmentIndex(
   return found;
 }
 
+// Each lecture's transcript as last loaded, shown at once on returning to the workspace
+const lastTranscripts = new Map<string, TranscriptSegment[]>();
+
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
@@ -51,7 +54,10 @@ export default function TranscriptSidebar({
   currentTime: number;
   onSeek: (seconds: number) => void;
 }) {
-  const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [state, setState] = useState<LoadState>(() => {
+    const saved = lastTranscripts.get(lectureId);
+    return saved ? { status: "ready", segments: saved } : { status: "loading" };
+  });
   const panel = useRef<HTMLDivElement>(null);
   const segmentRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const lastManualScroll = useRef(0);
@@ -65,6 +71,7 @@ export default function TranscriptSidebar({
         const data = await response.json();
         if (!response.ok)
           throw new Error(data.detail || "Could not load the transcript.");
+        lastTranscripts.set(lectureId, data.segments);
         setState({ status: "ready", segments: data.segments });
       })
       .catch((err) => {
