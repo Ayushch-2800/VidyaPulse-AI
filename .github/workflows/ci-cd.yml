@@ -1,0 +1,253 @@
+# CI on every pull request; on a push to main it also publishes the images and deploys.
+#   1. Backend tests (pytest --cov, offline) and frontend lint + build
+#   2. Docker images for the API and the web app, each started and health-checked
+#   3. main only: push both images to GitHub Container Registry and deploy the API on Render
+# The web app deploys from Vercel's own GitHub integration. See docs/DEPLOYMENT.md.
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  # A new push to a PR replaces its running checks; deploys on main always finish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  # Public values compiled into the web image. Set them as repository variables
+  # (Settings, Secrets and variables, Actions, Variables); the placeholders only let it build.
+  WEB_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://api.example.com' }}
+  WEB_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+  WEB_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
+  WEB_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000' }}
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/server
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: apps/server/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # requirements-dev.txt and tests/ come with the Task 19 test suite
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install -r requirements.txt
+          fi
+
+      # The suite fakes Supabase, Gemini and Whisper, so it needs no keys or network
+      - name: pytest --cov
+        run: |
+          if [ -d tests ]; then
+            pytest --cov
+          else
+            echo "::warning::apps/server/tests is not on this branch yet (it comes with the Task 19 test suite), so no backend tests ran."
+          fi
+
+  frontend:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          HUSKY: "0"
+
+      - name: Lint
+        run: npm run lint --workspace=apps/web
+
+      - name: Build
+        run: npm run build --workspace=apps/web
+        env:
+          NEXT_PUBLIC_API_URL: ${{ env.WEB_API_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ env.WEB_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ env.WEB_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ env.WEB_SITE_URL }}
+
+  server-image:
+    name: API image
+    needs: [backend-tests, frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/vidyapulse-server
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/server
+          file: apps/server/Dockerfile
+          load: true
+          tags: vidyapulse-server:ci
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
+
+      # Starts with placeholder keys: nothing at startup calls Supabase or Gemini. Also proves the
+      # Whisper model is baked in, since the container loads it with HF_HUB_OFFLINE=1.
+      - name: Start it and wait for the health check
+        run: |
+          docker run -d --name api -p 8000:8000 \
+            -e NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co \
+            -e SUPABASE_SERVICE_ROLE_KEY=placeholder -e GEMINI_API_KEY=placeholder \
+            vidyapulse-server:ci
+          for i in $(seq 1 45); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' api)
+            loaded=$(docker logs api 2>&1 | grep -c "Whisper model loaded successfully" || true)
+            [ "$status" = healthy ] && [ "$loaded" -gt 0 ] && break
+            sleep 2
+          done
+          docker logs api
+          curl -fsS http://localhost:8000/
+          [ "$(docker inspect -f '{{.State.Health.Status}}' api)" = healthy ]
+          docker logs api 2>&1 | grep -q "Whisper model loaded successfully"
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/server
+          file: apps/server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=server
+
+  web-image:
+    name: Web image
+    needs: [backend-tests, frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/vidyapulse-web
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Short commit for the page footer
+        id: commit
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          load: true
+          tags: vidyapulse-web:ci
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ env.WEB_API_URL }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ env.WEB_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ env.WEB_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_SITE_URL=${{ env.WEB_SITE_URL }}
+            BUILD_COMMIT=${{ steps.commit.outputs.short }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Start it and load the pages
+        run: |
+          docker run -d --name web -p 3000:3000 vidyapulse-web:ci
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:3000/ && break; sleep 2; done
+          for page in / /login /chat /upload /ingest /chat/export; do
+            curl -fsS -o /dev/null -w "$page %{http_code}\n" "http://localhost:3000$page"
+          done
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ env.WEB_API_URL }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ env.WEB_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ env.WEB_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_SITE_URL=${{ env.WEB_SITE_URL }}
+            BUILD_COMMIT=${{ steps.commit.outputs.short }}
+          cache-from: type=gha,scope=web
+
+  deploy-api:
+    name: Deploy API to Render
+    needs: [server-image, web-image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      # The hook URL is a secret: anyone holding it can trigger deploys
+      - name: Trigger the Render deploy hook for this commit
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::warning::The RENDER_DEPLOY_HOOK_URL secret is not set, so the API was not deployed. See docs/DEPLOYMENT.md."
+            exit 0
+          fi
+          case "$RENDER_DEPLOY_HOOK_URL" in *\?*) sep="&" ;; *) sep="?" ;; esac
+          curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}${sep}ref=${GITHUB_SHA}" -o response.json
+          echo "Render accepted the deploy of ${GITHUB_SHA::7}: $(cat response.json 2>/dev/null)"

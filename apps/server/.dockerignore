@@ -19,7 +19,6 @@ test_frame.jpg
 *.webm
 # SQL migrations run in the Supabase SQL editor, not in the container
 migrations/
-apps/
 Dockerfile
 .dockerignore
 .DS_Store
