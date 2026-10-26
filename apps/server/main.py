@@ -112,11 +112,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="VidyaPulse AI Engine", lifespan=lifespan)
 
+# Web app origins allowed to call the API, comma-separated. In production set it to the
+# site's domains, e.g. "https://vidyapulse.in,https://www.vidyapulse.in"
+CORS_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+# Optional extra origin pattern, e.g. r"https://vidyapulse-[a-z0-9-]+\.vercel\.app" for previews
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", "").strip()
+
 # CORS setup for Next.js frontend & Chrome Extension
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_origin_regex=r"chrome-extension://.*",  # Safely allows Chrome extension requests
+    allow_origins=CORS_ORIGINS,
+    # Safely allows Chrome extension requests
+    allow_origin_regex=r"chrome-extension://.*"
+    + (f"|{CORS_ORIGIN_REGEX}" if CORS_ORIGIN_REGEX else ""),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

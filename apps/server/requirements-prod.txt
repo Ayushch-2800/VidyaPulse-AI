@@ -1,0 +1,20 @@
+# Everything the deployed server imports, installed by the Docker image (Dockerfile).
+# requirements.txt has the API's core packages. These are the libraries the app imports
+# only when it needs them: local Whisper, OpenCV and scikit-image for slides, the Gemini
+# SDKs, mutagen, Pillow, the bundled ffmpeg, and python-multipart for file uploads.
+-r requirements.txt
+# faster-whisper decodes audio with PyAV; PyAV 19 dropped an argument it passes, which makes
+# every transcription fail with "open() got an unexpected keyword argument 'metadata_errors'"
+av==18.1.0
+faster-whisper==1.2.1
+google-api-core==2.33.0
+google-genai==2.33.0
+google-generativeai==0.8.6
+mutagen==1.48.1
+numpy==2.5.4
+# The headless build: the same cv2 module without desktop GUI libraries a server can't use
+opencv-python-headless==4.14.0.94
+pillow==13.0.0
+python-multipart==0.0.32
+scikit-image==0.26.0
+static-ffmpeg==3.0

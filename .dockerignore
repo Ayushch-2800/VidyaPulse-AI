@@ -1,0 +1,22 @@
+# Build context for apps/web/Dockerfile (the repo root). The backend builds from
+# apps/server with its own apps/server/.dockerignore.
+.git
+.github
+.husky
+**/node_modules
+**/.next
+**/.env
+**/.env.*
+!.env.example
+*.pem
+apps/server
+vidyapulse-extension
+docs
+**/.DS_Store
+**/*.tsbuildinfo
+**/next-env.d.ts
+apps/web/test-audio.txt
+**/Dockerfile
+**/.dockerignore
+docker-compose.yml
+render.yaml
