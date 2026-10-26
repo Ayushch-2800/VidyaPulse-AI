@@ -32,3 +32,5 @@ Chrome 116 or newer is needed.
   stores the audio as MP3 in the `lectures` bucket, and runs Whisper, embeddings and the study tools.
 
 The URLs live in `config.js`. Recordings are saved to the same dev account as YouTube lectures.
+For a deployed API, change both URLs there and add the API to `host_permissions` in
+`manifest.json` (see `docs/DEPLOYMENT.md`, step 6).

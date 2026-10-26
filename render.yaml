@@ -1,0 +1,39 @@
+# Render Blueprint for the VidyaPulse API (the FastAPI backend in apps/server).
+# In Render: New, Blueprint, pick this repository. Render asks once for every value marked
+# `sync: false`; paste them from your local apps/server/.env (new, rotated keys).
+# The web app is on Vercel, not here. See docs/DEPLOYMENT.md for the full walkthrough.
+services:
+  - type: web
+    name: vidyapulse-api
+    runtime: docker
+    repo: https://github.com/Ayushch-2800/VidyaPulse-AI
+    branch: main
+    dockerfilePath: ./apps/server/Dockerfile
+    dockerContext: ./apps/server
+    # Render's closest region to India. It can't be changed after the service is created.
+    region: singapore
+    # 1 CPU, 2 GB RAM, $25/month. Local Whisper needs it: decoding a 1-hour recording alone
+    # peaks around 630 MB, so the 512 MB plans run out of memory on the first real lecture.
+    plan: 1c-2g
+    # One instance: recordings from the extension are joined from files on this instance's disk
+    numInstances: 1
+    healthCheckPath: /
+    # GitHub Actions deploys once the tests and image builds pass (RENDER_DEPLOY_HOOK_URL),
+    # so Render doesn't also deploy every push on its own
+    autoDeployTrigger: "off"
+    envVars:
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # The web app's origins, comma-separated, e.g. https://vidyapulse.in,https://www.vidyapulse.in
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GEMINI_CHAT_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_TIMEOUT_SECONDS
+        value: "120"
+      - key: GEMINI_THINKING_LEVEL
+        value: low

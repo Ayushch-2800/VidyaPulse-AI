@@ -1,0 +1,24 @@
+# Keep secrets, local media and dev tooling out of the image
+.env
+.env.*
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+temp_chunks/
+test_frame.jpg
+*.mp3
+*.mp4
+*.mkv
+*.wav
+*.webm
+# SQL migrations run in the Supabase SQL editor, not in the container
+migrations/
+Dockerfile
+.dockerignore
+.DS_Store

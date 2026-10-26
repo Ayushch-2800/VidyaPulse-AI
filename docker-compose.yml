@@ -1,0 +1,44 @@
+# Production-like local run of both containers (the same images CI builds).
+#   docker compose --env-file apps/web/.env.local up --build
+# Then open http://localhost:3000. The backend reads apps/server/.env; the web build reads
+# NEXT_PUBLIC_* from the file passed with --env-file (or your shell).
+name: vidyapulse
+
+services:
+  server:
+    build:
+      context: ./apps/server
+    image: vidyapulse-server
+    env_file:
+      - path: ./apps/server/.env
+        required: false
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    ports:
+      - "8000:8000"
+    # Uploads and the extension's audio pieces, kept across container restarts
+    volumes:
+      - server-temp:/app/temp_chunks
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # The browser calls the API, so this is the address as seen from your machine
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+        BUILD_COMMIT: ${BUILD_COMMIT:-local}
+    image: vidyapulse-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  server-temp:
