@@ -57,10 +57,12 @@ def validate_and_save_upload(file: UploadFile) -> str:
     return temp_file.name
 
 
-def convert_to_mp3_if_needed(input_path: str) -> str:
+def convert_to_mp3_if_needed(
+    input_path: str, bitrate: str = "128k", mono: bool = False
+) -> str:
     """
     Converts video files (.mp4, .mkv) or uncompressed audio to compressed 128kbps MP3.
-    Returns path to the extracted audio file.
+    Returns path to the extracted audio file. mono halves the size for speech-only recordings.
     """
     ext = os.path.splitext(input_path)[1].lower()
 
@@ -69,7 +71,7 @@ def convert_to_mp3_if_needed(input_path: str) -> str:
 
     output_mp3_path = os.path.splitext(input_path)[0] + "_extracted.mp3"
 
-    # Run FFmpeg to extract/re-encode audio to 128kbps MP3
+    # Run FFmpeg to extract/re-encode audio to MP3
     command = [
         "ffmpeg",
         "-y",
@@ -79,9 +81,10 @@ def convert_to_mp3_if_needed(input_path: str) -> str:
         "-acodec",
         "libmp3lame",
         "-ab",
-        "128k",
+        bitrate,
         "-ar",
         "44100",
+        *(["-ac", "1"] if mono else []),
         output_mp3_path,
     ]
 

@@ -1,20 +1,23 @@
 {
-    "manifest_version": 3,
-    "name": "VidyaPulse Audio Ingestion",
-    "version": "1.0",
-    "permissions": [
-      "offscreen",
-      "tabCapture",
-      "storage",       
-      "activeTab"
-    ],
-    "host_permissions": [
-      "http://localhost:8000/*"
-    ],
-    "background": {
-      "service_worker": "background.js"
-    },
-    "action": {
-      "default_popup": "popup.html"
-    }
+  "manifest_version": 3,
+  "name": "VidyaPulse Audio Ingestion",
+  "description": "Records the audio of a class playing in a browser tab and turns it into a VidyaPulse lecture.",
+  "version": "1.1",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "offscreen",
+    "tabCapture",
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Record this tab with VidyaPulse",
+    "default_popup": "popup.html"
   }
+}
