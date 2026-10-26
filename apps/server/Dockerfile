@@ -22,11 +22,13 @@ RUN pip install -r requirements-prod.txt
 # Both download on first use, so fetch them now: the server then starts with no network calls.
 # static_ffmpeg also takes a lock file next to its binaries and chmods any binary the user can't
 # run, so make the lock writable and the binaries readable and executable for the app user.
+# Some Hugging Face cache files are private to root; the app user needs to read them too.
 RUN python -c "import static_ffmpeg; static_ffmpeg.add_paths()" \
  && python -c "import os, static_ffmpeg; open(os.path.join(os.path.dirname(static_ffmpeg.__file__), 'lock.file'), 'a').close()" \
  && chmod 666 /opt/venv/lib/python*/site-packages/static_ffmpeg/lock.file \
  && chmod -R a+rX /opt/venv/lib/python*/site-packages/static_ffmpeg/bin \
- && python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
+ && python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')" \
+ && chmod -R a+rX /opt/hf-cache
 
 # ---- 2. Runtime image: the virtualenv, the model cache and the app code ----
 FROM ${PYTHON_IMAGE}

@@ -139,6 +139,10 @@ jobs:
           curl -fsS http://localhost:8000/
           [ "$(docker inspect -f '{{.State.Health.Status}}' api)" = healthy ]
           docker logs api 2>&1 | grep -q "Whisper model loaded successfully"
+          # The app runs as a non-root user; any file it can't read or run shows up here
+          if docker logs api 2>&1 | grep -q "Permission denied"; then
+            echo "::error::The API logged 'Permission denied' at startup"; exit 1
+          fi
 
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push'
